@@ -1,0 +1,24 @@
+
+config NET_VENDOR_SPINAL
+	bool "Spinal devices"
+	default n
+	help
+	  If you have a network (Ethernet) card belonging to this class, say Y.
+
+	  Note that the answer to this question doesn't directly affect the
+	  kernel: saying N will just cause the configurator to skip all
+	  the questions about LiteX devices. If you say Y, you will be asked
+	  for your specific card in the following questions.
+
+if NET_VENDOR_SPINAL
+
+config SPINAL_LIB_MAC
+	tristate "LiteX Ethernet support"
+	select NET_CORE
+	select MII
+	select PHYLIB
+	help
+	  If you wish to compile a kernel for hardware with a Spinal lib mac
+	  device then you should answer Y to this.
+
+endif # NET_VENDOR_SPINAL

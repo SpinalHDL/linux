@@ -555,6 +555,13 @@ config GPIO_SPEAR_SPICS
 	help
 	  Say yes here to support ST SPEAr SPI Chip Select as GPIO device
 
+config GPIO_SPINAL_LIB
+	tristate "Spinal lib GPIO"
+	depends on OF_GPIO
+	select GPIOLIB_IRQCHIP
+	help
+	  Say Y or M here to build support for the Spinal Lib GPIO device.
+
 config GPIO_SPRD
 	tristate "Spreadtrum GPIO support"
 	depends on ARCH_SPRD || COMPILE_TEST

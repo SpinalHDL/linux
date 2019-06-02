@@ -1,0 +1,1 @@
+obj-$(CONFIG_SPINAL_LIB_MAC) += spinal_lib_mac.o

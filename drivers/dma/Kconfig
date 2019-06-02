@@ -579,6 +579,12 @@ config STM32_MDMA
 	  If you have a board based on STM32 SoC and wish to use the master DMA
 	  say Y here.
 
+config SPINAL_LIB_DMASG
+	tristate "SpinalHDL lib DMASG"
+	select DMA_ENGINE
+	help
+	  Enable support for SpinalHDL lib DMASG controller.
+
 config SPRD_DMA
 	tristate "Spreadtrum DMA support"
 	depends on ARCH_SPRD || COMPILE_TEST

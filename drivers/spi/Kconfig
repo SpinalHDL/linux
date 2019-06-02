@@ -767,6 +767,11 @@ config SPI_SLAVE_MT27XX
 	  If you want to use MediaTek(R) SPI slave interface,
 	  say Y or M here.If you are not sure, say N.
 	  SPI slave drivers for Mediatek MT27XX series ARM SoCs.
+	  
+config SPI_SPINAL_LIB
+	tristate "Spinal lib SPI Controller"
+	help
+	  This is the driver for the Spinal lib SPI Controller.
 
 config SPI_SPRD
 	tristate "Spreadtrum SPI controller"
