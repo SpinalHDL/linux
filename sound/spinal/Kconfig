@@ -1,0 +1,5 @@
+config SND_SPINAL_LIB_AUDIO_OUT
+	tristate "Audio support for the Spinal lib audio out"
+	select SND_PCM
+	help
+	  Select this option to enable Spinal lib audio out
