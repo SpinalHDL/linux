@@ -300,13 +300,10 @@ static int spinal_lib_dmasg_free_tx_descriptor(struct spinal_lib_dmasg_chan *cha
     //printk("spinal_lib_dmasg_free_tx_descriptor %x %x %x\n", (u32)&(desc->segments), (u32)(desc->segments.prev), (u32)(desc->segments.next));
 
     list_for_each_entry(segment, &desc->segments, node) {
-        //printk("spinal_lib_dmasg_free_tx_descriptor - %x %x\n", (u32) segment, (u32) segment->phys);
         dma_pool_free(chan->segment_pool, segment, segment->phys);
     }
 
-    //printk("spinal_lib_dmasg_free_tx_descriptor A\n");
     kzfree(desc);
-    //printk("spinal_lib_dmasg_free_tx_descriptor B\n");
     return 0;
 }
 
@@ -329,13 +326,11 @@ static void spinal_lib_dmasg_do_tasklet(unsigned long data)
         unsigned long flags;
 
         spin_lock_irqsave(&chan->lock, flags);
-        //printk("spinal_lib_dmasg_do_tasklet got lock\n");
 
         if(!chan->current_segment || !(chan->current_segment->hw.status & DMASG_DESCRIPTOR_STATUS_COMPLETED)) {
             spin_unlock_irqrestore(&chan->lock, flags);
             break;
         }
-        //printk("spinal_lib_dmasg_do_tasklet completed\n");
         chan->current_segment->hw.status = 0;
         chan->current_segment = chan->current_segment->next;
 
@@ -348,7 +343,6 @@ static void spinal_lib_dmasg_do_tasklet(unsigned long data)
             callback(callback_param);
         }
     }
-    //printk("spinal_lib_dmasg_do_tasklet done\n");
 }
 
 static irqreturn_t spinal_lib_dmasg_interrupt(int irq, void *dev_id)
@@ -415,7 +409,6 @@ static int spinal_lib_dmasg_chan_probe(struct spinal_lib_dmasg_device *priv,
 
     /* Initialize the tasklet */
     tasklet_init(&chan->tasklet, spinal_lib_dmasg_do_tasklet, (unsigned long)chan);
-    //printk("spinal_lib_dmasg_chan_probe tasklet with %x\n", (u32)chan);
 
     /* Request the interrupt */
     chan->irq = irq_of_parse_and_map(node, 0);
@@ -426,21 +419,8 @@ static int spinal_lib_dmasg_chan_probe(struct spinal_lib_dmasg_device *priv,
         return err;
     }
 
-    //printk("spinal_lib_dmasg_chan_probe success %d %x\n", chan->irq, (u32)node);
     return 0;
 }
-
-//static int spinal_lib_dmasg_child_probe(struct spinal_lib_dmasg_device *priv,
-//                    struct device_node *node)
-//{
-//    int i;
-//    //printk("spinal_lib_dmasg_child_probe\n");
-//
-//    for (i = 0; i < priv->chan_count; i++)
-//        spinal_lib_dmasg_chan_probe(priv, node, i);
-//
-//    return 0;
-//}
 
 static int spinal_lib_dmasg_alloc_chan_resources(struct dma_chan *dchan)
 {
@@ -470,24 +450,17 @@ static int spinal_lib_dmasg_terminate_all(struct dma_chan *dchan)
     while(dmasg_busy(chan->priv->regs, chan->hardware_id));
 
 
-    //printk("spinal_lib_dmasg_terminate_all A\n");
     if(chan->current_descriptor){
         spinal_lib_dmasg_free_tx_descriptor(chan, chan->current_descriptor);
         chan->current_descriptor = NULL;
         chan->current_segment = NULL;
     }
 
-    //printk("spinal_lib_dmasg_terminate_all B\n");
     list_for_each_entry(desc, &chan->pending_list, node) {
         spinal_lib_dmasg_free_tx_descriptor(chan, desc);
     }
 
-    //printk("spinal_lib_dmasg_terminate_all C\n");
     INIT_LIST_HEAD(&chan->pending_list);
-//    struct dma_pool *segment_pool;
-//    struct list_head pending_list;
-//    struct spinal_lib_dmasg_tx_descriptor *current_descriptor;
-//    struct spinal_lib_dmasg_segment * current_segment;
     spin_unlock_irqrestore(&chan->lock, flags);
 
     return 0;
@@ -503,7 +476,6 @@ static void spinal_lib_dmasg_issue_pending(struct dma_chan *dchan)
     struct spinal_lib_dmasg_tx_descriptor *desc;
     struct spinal_lib_dmasg_segment * head_segment;
     unsigned long flags;
-    u32 busy[2];
     //printk("spinal_lib_dmasg_issue_pending\n");
 
     spin_lock_irqsave(&chan->lock, flags);
@@ -523,14 +495,9 @@ static void spinal_lib_dmasg_issue_pending(struct dma_chan *dchan)
     dmasg_interrupt_config(chan->priv->regs, chan->hardware_id, DMASG_CHANNEL_INTERRUPT_DESCRIPTOR_COMPLETION_MASK);
     dmasg_input_memory(chan->priv->regs, chan->hardware_id, 0, 16);
     dmasg_output_stream (chan->priv->regs, chan->hardware_id, 0, 0, 0, 1);
-    busy[0] = dmasg_busy(chan->priv->regs, chan->hardware_id);
-    //printk("miaouuu %x %x %llx %llx\n", head_segment->hw.control, head_segment->hw.status, head_segment->hw.from, head_segment->hw.next);
     dmasg_linked_list_start(chan->priv->regs, chan->hardware_id, (u32) head_segment->phys);
-    busy[1] = dmasg_busy(chan->priv->regs, chan->hardware_id);
 
 
-    //printk("spinal_lib_dmasg_issue_pending Done %llx %x %d %d %d\n", head_segment->phys, (u32)head_segment,  chan->hardware_id, busy[0], busy[1]);
-    //printk("miaouuu2 %x %x %llx %llx\n", head_segment->hw.control, head_segment->hw.status, head_segment->hw.from, head_segment->hw.next);
 
 done:
     spin_unlock_irqrestore(&chan->lock, flags);
@@ -554,7 +521,7 @@ static struct dma_chan *of_dma_spinal_lib_xlate(struct of_phandle_args *dma_spec
     chan_id = dma_spec->args[0];
     if (chan_id >= priv->chan_count)
         return NULL;
-    //printk("gived %d\n", chan_id);
+
     return dma_get_slave_channel(&priv->chan[chan_id].common); // dma_get_slave_channel(&priv->chan[chan_id]->common);
 }
 
@@ -571,13 +538,10 @@ static dma_cookie_t spinal_lib_dmasg_tx_submit(struct dma_async_tx_descriptor *t
     spin_lock_irqsave(&chan->lock, flags);
 
     cookie = dma_cookie_assign(tx);
-
     list_add_tail(&desc->node, &chan->pending_list);
-//    chan->desc_pendingcount++;
 
     spin_unlock_irqrestore(&chan->lock, flags);
 
-    //printk("spinal_lib_dmasg_tx_submit success\n");
     return cookie;
 }
 
@@ -610,12 +574,10 @@ static struct dma_async_tx_descriptor *spinal_lib_dmasg_prep_dma_cyclic(
 
     for (i = 0; i < num_periods; ++i) {
         size_t copy, sg_used;
-        //printk("spinal_lib_dmasg_prep_dma_cyclic new period\n");
         sg_used = 0;
 
         while (sg_used < period_len) {
             struct spinal_lib_dmasg_segment *segment;
-            //printk("spinal_lib_dmasg_prep_dma_cyclic new segment\n");
 
             /* Get a free segment */
             segment = spinal_lib_dmasg_alloc_segment(chan);
@@ -640,23 +602,15 @@ static struct dma_async_tx_descriptor *spinal_lib_dmasg_prep_dma_cyclic(
             prev = segment;
             sg_used += copy;
 
-            /*
-             * Insert the segment into the descriptor segments
-             * list.
-             */
-            //printk("spinal_lib_dmasg_prep_dma_cyclic ADD1 %x %x %x\n", (u32)&(desc->segments), (u32)(desc->segments.prev), (u32)(desc->segments.next));
-            list_add_tail(&segment->node, &desc->segments);
-            //printk("spinal_lib_dmasg_prep_dma_cyclic ADD2 %x %x %x\n", (u32)&(desc->segments), (u32)(desc->segments.prev), (u32)(desc->segments.next));
 
+            list_add_tail(&segment->node, &desc->segments);
         }
     }
 
     head_segment = list_first_entry(&desc->segments, struct spinal_lib_dmasg_segment, node);
     prev->hw.next = head_segment->phys;
     prev->next = head_segment;
-//    desc->current_segment = head_segment;
 
-    //printk("spinal_lib_dmasg_prep_dma_cyclic success\n");
     return &desc->async_tx;
 }
 
@@ -665,16 +619,14 @@ static struct dma_async_tx_descriptor *spinal_lib_dmasg_prep_slave_sg(
     enum dma_transfer_direction direction, unsigned long flags,
     void *context)
 {
-
     //printk("spinal_lib_dmasg_prep_slave_sg\n");
+
     return NULL;
 }
 
 static void spinal_lib_dmasg_chan_remove(struct spinal_lib_dmasg_chan *chan)
 {
     //printk("spinal_lib_dmasg_chan_remove\n");
-    //TODO
-
 
     list_del(&chan->common.device_node);
 }
@@ -685,7 +637,6 @@ static int spinal_lib_dmasg_probe(struct platform_device *pdev)
     struct device_node *node = pdev->dev.of_node;
     struct device_node *child = pdev->dev.of_node;
     int i, err;
-
 
     //printk("spinal_lib_dmasg_probe\n");
 
@@ -736,8 +687,6 @@ static int spinal_lib_dmasg_probe(struct platform_device *pdev)
         i++;
     }
 
-
-
     /* Register the DMA engine with the core */
     dma_async_device_register(&priv->common);
 
@@ -749,12 +698,12 @@ static int spinal_lib_dmasg_probe(struct platform_device *pdev)
     }
 
 
-    dev_info(&pdev->dev, "SpinalHDL lib DMASG Driver Probed!!\n");
+    dev_info(&pdev->dev, "Probe success\n");
 
     return 0;
 
 error:
-    dev_info(&pdev->dev, "SpinalHDL lib DMASG Driver errored :(\n");
+    dev_info(&pdev->dev, "Probe failure :(\n");
     for (i = 0; i < priv->chan_count; i++)
         spinal_lib_dmasg_chan_remove(&priv->chan[i]);
 
