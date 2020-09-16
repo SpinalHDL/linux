@@ -79,9 +79,9 @@ static void spi_spinal_lib_cmd_wait(struct spi_spinal_lib *hw){
 	while(spi_spinal_lib_cmd_availability(hw) == 0) cpu_relax();
 }
 
-static void spi_spinal_lib_rsp_wait(struct spi_spinal_lib *hw){
-	while(spi_spinal_lib_rsp_occupancy(hw) == 0) cpu_relax();
-}
+//static void spi_spinal_lib_rsp_wait(struct spi_spinal_lib *hw){
+//	while(spi_spinal_lib_rsp_occupancy(hw) == 0) cpu_relax();
+//}
 
 static u32 spi_spinal_lib_rsp_pull(struct spi_spinal_lib *hw){
 	u32 rsp;
