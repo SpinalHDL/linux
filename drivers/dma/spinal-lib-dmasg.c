@@ -367,12 +367,9 @@ static void spinal_lib_dmasg_cyclic_segment_update(struct spinal_lib_dmasg_chan*
             desc->buffer_left = desc->buffer_len;
         }
 
-        printk("  seg add %d %x %d\n", segment->hw.control + 1, (u32)segment->hw.from, segment->notify);
-
         chan->current_segment = segment->next;
 
         if(callback){
-            printk("  callback\n");
             spin_unlock_irqrestore(&chan->lock, flags);
             callback(callback_param);
             spin_lock_irqsave(&chan->lock, flags);
@@ -625,8 +622,6 @@ static struct dma_async_tx_descriptor *spinal_lib_dmasg_prep_dma_cyclic(
 
         segment = spinal_lib_dmasg_alloc_segment(chan);
         segment->hw.status = DMASG_DESCRIPTOR_STATUS_COMPLETED;
-
-        printk("create segment %x %x\n", (u32)segment, segment->hw.status);
 
         if (prev){
             prev->hw.next = segment->phys;
