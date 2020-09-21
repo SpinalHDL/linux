@@ -33,16 +33,15 @@ struct spinal_lib_audio_out_device {
 };
 
 static const struct snd_pcm_hardware sdma_pcm_hardware = {
-    .info           = SNDRV_PCM_INFO_MMAP |
-                  SNDRV_PCM_INFO_MMAP_VALID |
-                  SNDRV_PCM_INFO_PAUSE | SNDRV_PCM_INFO_RESUME |
-                  SNDRV_PCM_INFO_NO_PERIOD_WAKEUP |
-                  SNDRV_PCM_INFO_INTERLEAVED,
+    .info          = SNDRV_PCM_INFO_MMAP |
+                     SNDRV_PCM_INFO_MMAP_VALID |
+                     SNDRV_PCM_INFO_NO_PERIOD_WAKEUP |
+                     SNDRV_PCM_INFO_INTERLEAVED,
 
     .formats =      (SNDRV_PCM_FMTBIT_S16_LE),
-    .rates =        (SNDRV_PCM_RATE_CONTINUOUS | SNDRV_PCM_RATE_8000_48000),
+    .rates =        (SNDRV_PCM_RATE_CONTINUOUS | SNDRV_PCM_RATE_8000_192000),
     .rate_min =     5500,
-    .rate_max =     48000,
+    .rate_max =     192000,
     .channels_min =     1,
     .channels_max =     2,
     .period_bytes_min   = 1 * 1024,
@@ -115,7 +114,7 @@ static int spinal_lib_audio_out_trigger(struct snd_pcm_substream *substream, int
         unsigned long flags = DMA_CTRL_ACK;
         dma_cookie_t cookie;
 
-        dev_info(priv->dev, "Start rate=%d cha=%d buf=%d per=%d\n",  substream->runtime->rate, substream->runtime->channels, snd_pcm_lib_buffer_bytes(substream), snd_pcm_lib_period_bytes(substream));
+        dev_info(priv->dev, "Start cha=%d rate=%d buf=%d per=%d\n",  (u32)substream->runtime->channels, (u32)substream->runtime->rate, (u32)substream->runtime->buffer_size, (u32)substream->runtime->period_size);
         writel(priv->hz/substream->runtime->rate, priv->regs + AUDIO_OUT_RATE);
         writel(substream->runtime->channels, priv->regs + AUDIO_OUT_STATUS);
 
