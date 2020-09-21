@@ -243,7 +243,9 @@ struct spinal_lib_dmasg_tx_descriptor {
     struct list_head segments;
     struct list_head node;
 
-    bool cyclic;
+    u32 period_left, period_len;
+    u32 buffer_left, buffer_len;
+    dma_addr_t buf_addr;
 };
 
 
@@ -263,6 +265,7 @@ struct spinal_lib_dmasg_segment {
     struct list_head node;
     struct spinal_lib_dmasg_segment* next;
     dma_addr_t phys;
+    bool notify;
 } __aligned(64);
 
 
@@ -315,34 +318,79 @@ static int spinal_lib_dmasg_chan_reset(struct spinal_lib_dmasg_chan *chan)
     return 0;
 }
 
-static void spinal_lib_dmasg_do_tasklet(unsigned long data)
-{
-    struct spinal_lib_dmasg_chan *chan = (struct spinal_lib_dmasg_chan *)data;
-    //printk("spinal_lib_dmasg_do_tasklet %x\n", (u32)chan);
 
+static void spinal_lib_dmasg_cyclic_segment_update(struct spinal_lib_dmasg_chan* chan, bool init){
+    unsigned long flags = 0;
+    if(!init)
+        spin_lock_irqsave(&chan->lock, flags);
+
+//    printk("spinal_lib_dmasg_cyclic_segment_update\n");
     while(1){
         dma_async_tx_callback callback;
         void *callback_param;
-        unsigned long flags;
+        struct spinal_lib_dmasg_segment *segment;
+        struct spinal_lib_dmasg_tx_descriptor *desc;
+        u32 bytes;
 
-        spin_lock_irqsave(&chan->lock, flags);
+        segment = chan->current_segment;
+        desc = chan->current_descriptor;
 
-        if(!chan->current_segment || !(chan->current_segment->hw.status & DMASG_DESCRIPTOR_STATUS_COMPLETED)) {
-            spin_unlock_irqrestore(&chan->lock, flags);
+        if(!segment || !(segment->hw.status & DMASG_DESCRIPTOR_STATUS_COMPLETED)) {
             break;
         }
-        chan->current_segment->hw.status = 0;
-        chan->current_segment = chan->current_segment->next;
 
-        callback = chan->current_descriptor->async_tx.callback;
-        callback_param = chan->current_descriptor->async_tx.callback_param;
+        if(!init && segment->notify){
+            callback = desc->async_tx.callback;
+            callback_param = desc->async_tx.callback_param;
+        } else {
+            callback = NULL;
+        }
 
-        spin_unlock_irqrestore(&chan->lock, flags);
+        // Update segment
+        bytes = min_t(u32, min_t(u32, SPINAL_LIB_DMASG_MAX_TRANS_LEN, desc->period_left), desc->buffer_left);
+        segment->hw.control = bytes-1;
+        segment->hw.from = desc->buf_addr + (desc->buffer_len - desc->buffer_left);
+        segment->hw.status = 0;
+
+
+        // Update for next desc
+        desc->period_left -= bytes;
+        desc->buffer_left -= bytes;
+
+        if(desc->period_left == 0){
+            desc->period_left = desc->period_len;
+            segment->notify = true;
+        } else {
+            segment->notify = false;
+        }
+        if(desc->buffer_left == 0){
+            desc->buffer_left = desc->buffer_len;
+        }
+
+        printk("  seg add %d %x %d\n", segment->hw.control + 1, (u32)segment->hw.from, segment->notify);
+
+        chan->current_segment = segment->next;
 
         if(callback){
+            printk("  callback\n");
+            spin_unlock_irqrestore(&chan->lock, flags);
             callback(callback_param);
+            spin_lock_irqsave(&chan->lock, flags);
         }
     }
+    if(!init)
+        spin_unlock_irqrestore(&chan->lock, flags);
+}
+
+static void spinal_lib_dmasg_do_tasklet(unsigned long data)
+{
+    struct spinal_lib_dmasg_chan *chan = (struct spinal_lib_dmasg_chan *)data;
+
+    //printk("spinal_lib_dmasg_do_tasklet %x\n", (u32)chan);
+
+
+    spinal_lib_dmasg_cyclic_segment_update(chan, false);
+
 }
 
 static irqreturn_t spinal_lib_dmasg_interrupt(int irq, void *dev_id)
@@ -491,6 +539,7 @@ static void spinal_lib_dmasg_issue_pending(struct dma_chan *dchan)
     chan->current_descriptor = desc;
     chan->current_segment = head_segment;
 
+    spinal_lib_dmasg_cyclic_segment_update(chan, true);
 
     dmasg_interrupt_config(chan->priv->regs, chan->hardware_id, DMASG_CHANNEL_INTERRUPT_DESCRIPTOR_COMPLETION_MASK);
     dmasg_input_memory(chan->priv->regs, chan->hardware_id, 0, 16);
@@ -554,7 +603,6 @@ static struct dma_async_tx_descriptor *spinal_lib_dmasg_prep_dma_cyclic(
     struct spinal_lib_dmasg_chan *chan = to_spinal_lib_dmasg_chan(dchan);
     struct spinal_lib_dmasg_tx_descriptor * desc;
     struct spinal_lib_dmasg_segment *head_segment, *prev = NULL;
-    u32 num_periods;
     int i;
 
     //printk("spinal_lib_dmasg_prep_dma_cyclic\n");
@@ -562,49 +610,32 @@ static struct dma_async_tx_descriptor *spinal_lib_dmasg_prep_dma_cyclic(
     if (!period_len)
         return NULL;
 
-    num_periods = buf_len / period_len;
-
-    if (!num_periods)
-        return NULL;
-
     desc = spinal_lib_dmasg_alloc_tx_descriptor(chan);
 
     dma_async_tx_descriptor_init(&desc->async_tx, &chan->common);
     desc->async_tx.tx_submit = spinal_lib_dmasg_tx_submit;
+    desc->period_len = period_len;
+    desc->period_left = period_len;
+    desc->buffer_len = buf_len;
+    desc->buffer_left = buf_len;
+    desc->buf_addr = buf_addr;
 
-    for (i = 0; i < num_periods; ++i) {
-        size_t copy, sg_used;
-        sg_used = 0;
+    for (i = 0; i < 10; ++i) {
+        struct spinal_lib_dmasg_segment *segment;
 
-        while (sg_used < period_len) {
-            struct spinal_lib_dmasg_segment *segment;
+        segment = spinal_lib_dmasg_alloc_segment(chan);
+        segment->hw.status = DMASG_DESCRIPTOR_STATUS_COMPLETED;
 
-            /* Get a free segment */
-            segment = spinal_lib_dmasg_alloc_segment(chan);
+        printk("create segment %x %x\n", (u32)segment, segment->hw.status);
 
-            /*
-             * Calculate the maximum number of bytes to transfer,
-             * making sure it is less than the hw limit
-             */
-            copy = min_t(size_t, period_len - sg_used,
-                     SPINAL_LIB_DMASG_MAX_TRANS_LEN);
-
-            segment->hw.control = copy-1;
-            segment->hw.status = 0;
-            segment->hw.from = buf_addr + sg_used + period_len * i;
-            segment->hw.to = 0;
-
-            if (prev){
-                prev->hw.next = segment->phys;
-                prev->next = segment;
-            }
-
-            prev = segment;
-            sg_used += copy;
-
-
-            list_add_tail(&segment->node, &desc->segments);
+        if (prev){
+            prev->hw.next = segment->phys;
+            prev->next = segment;
         }
+
+        prev = segment;
+
+        list_add_tail(&segment->node, &desc->segments);
     }
 
     head_segment = list_first_entry(&desc->segments, struct spinal_lib_dmasg_segment, node);
