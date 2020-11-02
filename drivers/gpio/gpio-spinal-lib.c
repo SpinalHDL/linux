@@ -197,6 +197,7 @@ static void spinal_lib_gpio_irq_enable(struct irq_data *d)
 	/* Enable interrupts */
 	assign_bit(offset, &chip->enabled, 1);
 	spinal_lib_gpio_set_ie(chip, offset);
+    spinal_lib_gpio_irq_unmask(d);
 }
 
 static void spinal_lib_gpio_irq_disable(struct irq_data *d)
