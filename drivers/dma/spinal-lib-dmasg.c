@@ -306,7 +306,8 @@ static int spinal_lib_dmasg_free_tx_descriptor(struct spinal_lib_dmasg_chan *cha
         dma_pool_free(chan->segment_pool, segment, segment->phys);
     }
 
-    kzfree(desc);
+    memset(desc, 0, sizeof(struct spinal_lib_dmasg_tx_descriptor));
+    kfree(desc);
     return 0;
 }
 
