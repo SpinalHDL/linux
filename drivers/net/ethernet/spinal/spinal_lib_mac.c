@@ -80,35 +80,35 @@ struct spinal_lib_mac_priv {
 
 
 static u32 spinal_lib_mac_rx_stats(void __iomem *base){
-    return readl(base + SPINAL_LIB_MAC_RX_STATS);
+    return readl_relaxed(base + SPINAL_LIB_MAC_RX_STATS);
 }
 
 static u32 spinal_lib_mac_tx_availability(void __iomem *base){
-    return readl(base + SPINAL_LIB_MAC_TX_AVAILABILITY);
+    return readl_relaxed(base + SPINAL_LIB_MAC_TX_AVAILABILITY);
 }
 
 static u32 spinal_lib_mac_tx_ready(void __iomem *base){
-    return readl(base + SPINAL_LIB_MAC_CTRL) & SPINAL_LIB_MAC_CTRL_TX_READY;
+    return readl_relaxed(base + SPINAL_LIB_MAC_CTRL) & SPINAL_LIB_MAC_CTRL_TX_READY;
 }
 
 static u32 spinal_lib_mac_rx_pending(void __iomem *base){
-    return readl(base + SPINAL_LIB_MAC_CTRL) & SPINAL_LIB_MAC_CTRL_RX_PENDING;
+    return readl_relaxed(base + SPINAL_LIB_MAC_CTRL) & SPINAL_LIB_MAC_CTRL_RX_PENDING;
 }
 
 static u32 spinal_lib_mac_rx_u32(void __iomem *base){
-    return readl(base + SPINAL_LIB_MAC_RX);
+    return readl_relaxed(base + SPINAL_LIB_MAC_RX);
 }
 
 static void spinal_lib_mac_tx_u32(void __iomem *base, u32 data){
-    writel(data, base + SPINAL_LIB_MAC_TX);
+    writel_relaxed(data, base + SPINAL_LIB_MAC_TX);
 }
 
 static void spinal_lib_mac_reset_set(void __iomem *base){
-    writel(SPINAL_LIB_MAC_CTRL_TX_RESET | SPINAL_LIB_MAC_CTRL_RX_RESET | SPINAL_LIB_MAC_CTRL_TX_ALIGN | SPINAL_LIB_MAC_CTRL_RX_ALIGN, base + SPINAL_LIB_MAC_CTRL);
+    writel_relaxed(SPINAL_LIB_MAC_CTRL_TX_RESET | SPINAL_LIB_MAC_CTRL_RX_RESET | SPINAL_LIB_MAC_CTRL_TX_ALIGN | SPINAL_LIB_MAC_CTRL_RX_ALIGN, base + SPINAL_LIB_MAC_CTRL);
 }
 
 static void spinal_lib_mac_reset_clear(void __iomem *base){
-    writel(SPINAL_LIB_MAC_CTRL_TX_ALIGN | SPINAL_LIB_MAC_CTRL_RX_ALIGN, base + SPINAL_LIB_MAC_CTRL);
+    writel_relaxed(SPINAL_LIB_MAC_CTRL_TX_ALIGN | SPINAL_LIB_MAC_CTRL_RX_ALIGN, base + SPINAL_LIB_MAC_CTRL);
 }
 
 
@@ -148,6 +148,14 @@ static int spinal_lib_mac_rx(struct net_device *ndev)
     }
     skb_reserve(skb, 2); /* align IP on 16B boundary */
     ptr = (u32*)(skb_put(skb, len)-2);
+    while(word_count >= 4){
+        ptr[0] = spinal_lib_mac_rx_u32(base);
+        ptr[1] = spinal_lib_mac_rx_u32(base);
+        ptr[2] = spinal_lib_mac_rx_u32(base);
+        ptr[3] = spinal_lib_mac_rx_u32(base);
+        ptr += 4;
+        word_count -= 4;
+    }
     while(word_count--){
         *ptr++ = spinal_lib_mac_rx_u32(base);
     }
@@ -283,6 +291,14 @@ int spinal_lib_mac_tx(struct sk_buff *skb, struct net_device *ndev)
         u32 tockens = spinal_lib_mac_tx_availability(base);
         if(tockens > word_count) tockens = word_count;
         word_count -= tockens;
+        while(tockens >= 4){
+            spinal_lib_mac_tx_u32(base, ptr[0]);
+            spinal_lib_mac_tx_u32(base, ptr[1]);
+            spinal_lib_mac_tx_u32(base, ptr[2]);
+            spinal_lib_mac_tx_u32(base, ptr[3]);
+            ptr += 4;
+            tockens -=4;
+        }
         while(tockens--){
             spinal_lib_mac_tx_u32(base, *ptr++);
         }
