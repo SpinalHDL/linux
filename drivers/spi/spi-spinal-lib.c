@@ -307,21 +307,22 @@ static int spi_spinal_lib_probe(struct platform_device *pdev)
 	}
 
 
+	hw->irq = -1;
 	/* irq is optional */
-	hw->irq = platform_get_irq(pdev, 0);
-	if (hw->irq >= 0) {
+//	hw->irq = platform_get_irq(pdev, 0);
+//	if (hw->irq >= 0) {
 //		err = devm_request_irq(&pdev->dev, hw->irq, spi_spinal_lib_irq, 0,
 //				       pdev->name, master);
 //		if (err)
 //			goto exit;
-		dev_info(&pdev->dev, "Interrupt not supported %d\n", hw->irq);
-		goto exit;
-	}
+//		dev_info(&pdev->dev, "Interrupt not supported %d\n", hw->irq);
+//		goto exit;
+//	}
 
 	err = devm_spi_register_master(&pdev->dev, master);
 	if (err)
 		goto exit;
-	dev_info(&pdev->dev, "base %p, irq %d\n", hw->base, hw->irq);
+	dev_info(&pdev->dev, "base %p\n", hw->base);
 
 	return 0;
 exit:
