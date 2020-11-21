@@ -59,56 +59,58 @@ static inline struct spi_spinal_lib *spi_spinal_lib_to_hw(struct spi_device *sde
 	return spi_master_get_devdata(sdev->master);
 }
 
-static u32 spi_spinal_lib_cmd_availability(struct spi_spinal_lib *hw){
-	return readl(hw->base + SPI_SPINAL_LIB_BUFFER) & 0xFFFF;
+static u32 spi_spinal_lib_cmd_availability(void __iomem *base){
+	return readl_relaxed(base + SPI_SPINAL_LIB_BUFFER) & 0xFFFF;
 }
 
-static u32 spi_spinal_lib_rsp_occupancy(struct spi_spinal_lib *hw){
-	return readl(hw->base + SPI_SPINAL_LIB_BUFFER) >> 16;
+static u32 spi_spinal_lib_rsp_occupancy(void __iomem *base){
+	return readl_relaxed(base + SPI_SPINAL_LIB_BUFFER) >> 16;
 }
 
-static void spi_spinal_lib_cmd(struct spi_spinal_lib *hw, u32 cmd){
-	writel(cmd, hw->base + SPI_SPINAL_LIB_DATA);
+static void spi_spinal_lib_cmd(void __iomem *base, u32 cmd){
+	writel_relaxed(cmd, base + SPI_SPINAL_LIB_DATA);
 }
 
-static u32 spi_spinal_lib_rsp(struct spi_spinal_lib *hw){
-	return readl(hw->base + SPI_SPINAL_LIB_DATA);
+static u32 spi_spinal_lib_rsp(void __iomem *base){
+	return readl_relaxed(base + SPI_SPINAL_LIB_DATA);
 }
 
-static void spi_spinal_lib_cmd_wait(struct spi_spinal_lib *hw){
-	while(spi_spinal_lib_cmd_availability(hw) == 0) cpu_relax();
+static void spi_spinal_lib_cmd_wait(void __iomem *base){
+	while(spi_spinal_lib_cmd_availability(base) == 0) cpu_relax();
 }
 
 //static void spi_spinal_lib_rsp_wait(struct spi_spinal_lib *hw){
 //	while(spi_spinal_lib_rsp_occupancy(hw) == 0) cpu_relax();
 //}
 
-static u32 spi_spinal_lib_rsp_pull(struct spi_spinal_lib *hw){
+static u32 spi_spinal_lib_rsp_pull(void __iomem *base){
 	u32 rsp;
-	while(((s32)(rsp = spi_spinal_lib_rsp(hw))) < 0) cpu_relax();
+	while(((s32)(rsp = spi_spinal_lib_rsp(base))) < 0) cpu_relax();
 	return rsp;
 }
 
 static void spi_spinal_lib_set_cs(struct spi_device *spi, bool high)
 {
 	struct spi_spinal_lib *hw = spi_spinal_lib_to_hw(spi);
-	spi_spinal_lib_cmd(hw, spi->chip_select | ((high != 0) ^ ((spi->mode & SPI_CS_HIGH) != 0) ? 0x00 : 0x80) | SPI_CMD_SS);
-	spi_spinal_lib_cmd_wait(hw);
+	spi_spinal_lib_cmd(hw->base, spi->chip_select | ((high != 0) ^ ((spi->mode & SPI_CS_HIGH) != 0) ? 0x00 : 0x80) | SPI_CMD_SS);
+	spi_spinal_lib_cmd_wait(hw->base);
 
 //	printk("CS %d %d\n",spi->chip_select, disable);
 }
 
 static void spi_spinal_lib_speed(struct spi_spinal_lib *hw, u32 speed_hz){
+    void __iomem *base = hw->base;
 	u32 clk_divider = (hw->hz/speed_hz/2)-1;
-	writel(clk_divider, hw->base + SPI_SPINAL_LIB_CLK_DIVIDER);
-	writel(clk_divider, hw->base + SPI_SPINAL_LIB_SS_DISABLE);
-	writel(clk_divider, hw->base + SPI_SPINAL_LIB_SS_SETUP);
-	writel(clk_divider, hw->base + SPI_SPINAL_LIB_SS_HOLD);
+	writel_relaxed(clk_divider, base + SPI_SPINAL_LIB_CLK_DIVIDER);
+	writel_relaxed(clk_divider, base + SPI_SPINAL_LIB_SS_DISABLE);
+	writel_relaxed(clk_divider, base + SPI_SPINAL_LIB_SS_SETUP);
+	writel_relaxed(clk_divider, base + SPI_SPINAL_LIB_SS_HOLD);
 }
 
 static int spi_spinal_lib_txrx(struct spi_master *master, struct spi_device *spi, struct spi_transfer *t)
 {
 	struct spi_spinal_lib *hw = spi_master_get_devdata(master);
+    void __iomem *base = hw->base;
 
 
 	spi_spinal_lib_speed(hw, t->speed_hz);
@@ -124,7 +126,7 @@ static int spi_spinal_lib_txrx(struct spi_master *master, struct spi_device *spi
 		dev_info(&master->dev, "Interrupt not implemented\n");
 		/* enable receive interrupt */
 //		hw->imr |= spi_spinal_lib_CONTROL_IRRDY_MSK;
-//		writel(hw->imr, hw->base + spi_spinal_lib_CONTROL);
+//		writel_relaxed(hw->imr, hw->base + spi_spinal_lib_CONTROL);
 
 		/* send the first byte */
 //		spi_spinal_lib_tx_word(hw);
@@ -137,11 +139,11 @@ static int spi_spinal_lib_txrx(struct spi_master *master, struct spi_device *spi
 					u32 burst;
 					u8 *ptr, *end;
 
-					burst = spi_spinal_lib_rsp_occupancy(hw);
+					burst = spi_spinal_lib_rsp_occupancy(base);
 					ptr = hw->rx + hw->count;
 					end = ptr + burst;
-					if(hw->rx) {while(ptr != end) {*ptr++ = spi_spinal_lib_rsp(hw);}}
-					else	   {while(ptr != end) { ptr++;  spi_spinal_lib_rsp(hw);}}
+					if(hw->rx) {while(ptr != end) {*ptr++ = spi_spinal_lib_rsp(base);}}
+					else	   {while(ptr != end) { ptr++;  spi_spinal_lib_rsp(base);}}
 					hw->count += burst;
 					token += burst;
 				}
@@ -152,8 +154,8 @@ static int spi_spinal_lib_txrx(struct spi_master *master, struct spi_device *spi
 					burst = min(hw->len - hw->txCount, token);
 					ptr = hw->tx + hw->txCount;
 					end = ptr + burst;
-					if(hw->tx) {while(ptr != end) {writel(cmd | *ptr++, hw->base + SPI_SPINAL_LIB_DATA);}}
-					else	   {while(ptr != end) {ptr++; writel(cmd, hw->base + SPI_SPINAL_LIB_DATA);}}
+					if(hw->tx) {while(ptr != end) {writel_relaxed(cmd | *ptr++, base + SPI_SPINAL_LIB_DATA);}}
+					else	   {while(ptr != end) {ptr++; writel_relaxed(cmd, base + SPI_SPINAL_LIB_DATA);}}
 					hw->txCount += burst;
 					token -= burst;
 				}
@@ -162,8 +164,8 @@ static int spi_spinal_lib_txrx(struct spi_master *master, struct spi_device *spi
 			u32 cmd = (hw->tx ? SPI_CMD_WRITE : 0) | SPI_CMD_READ;
 			while (hw->count < hw->len) {
 				u32 data = hw->tx ? hw->tx[hw->count] : 0;
-				writel(cmd | data, hw->base + SPI_SPINAL_LIB_DATA);
-				data = spi_spinal_lib_rsp_pull(hw);
+				writel_relaxed(cmd | data, base + SPI_SPINAL_LIB_DATA);
+				data = spi_spinal_lib_rsp_pull(base);
 				if (hw->rx) hw->rx[hw->count] = data;
 
 				hw->count++;
@@ -189,7 +191,7 @@ static int spi_spinal_lib_txrx(struct spi_master *master, struct spi_device *spi
 //	} else {
 //		/* disable receive interrupt */
 //		hw->imr &= ~spi_spinal_lib_CONTROL_IRRDY_MSK;
-//		writel(hw->imr, hw->base + spi_spinal_lib_CONTROL);
+//		writel_relaxed(hw->imr, hw->base + spi_spinal_lib_CONTROL);
 //
 //		spi_finalize_current_transfer(master);
 //	}
@@ -209,7 +211,7 @@ static int spi_spinal_lib_setup(struct spi_device *spi)
 			hw->ssActiveHigh |= 1 << spi->chip_select;
 		else
 			hw->ssActiveHigh &= ~(1 << spi->chip_select);
-		writel(hw->ssActiveHigh, hw->base + SPI_SPINAL_LIB_SS_ACTIVE_HIGH);
+		writel_relaxed(hw->ssActiveHigh, hw->base + SPI_SPINAL_LIB_SS_ACTIVE_HIGH);
 	}
 
 
@@ -217,7 +219,7 @@ static int spi_spinal_lib_setup(struct spi_device *spi)
 		config |= SPI_MODE_CPOL;
 	if (spi->mode & SPI_CPHA)
 		config |= SPI_MODE_CPHA;
-	writel(config, hw->base + SPI_SPINAL_LIB_CONFIG);
+	writel_relaxed(config, hw->base + SPI_SPINAL_LIB_CONFIG);
 
 
 //	printk("Setup %d %d\n", hw->ssActiveHigh, config);
@@ -278,12 +280,12 @@ static int spi_spinal_lib_probe(struct platform_device *pdev)
 	}
 	/* program defaults into the registers */
 	hw->ssActiveHigh = 0;
-	writel(0, hw->base + SPI_SPINAL_LIB_CONFIG);
-	writel(3, hw->base + SPI_SPINAL_LIB_INTERRUPT);
-	writel(3, hw->base + SPI_SPINAL_LIB_CLK_DIVIDER);
-	writel(3, hw->base + SPI_SPINAL_LIB_SS_DISABLE);
-	writel(3, hw->base + SPI_SPINAL_LIB_SS_SETUP);
-	writel(3, hw->base + SPI_SPINAL_LIB_SS_HOLD);
+	writel_relaxed(0, hw->base + SPI_SPINAL_LIB_CONFIG);
+	writel_relaxed(3, hw->base + SPI_SPINAL_LIB_INTERRUPT);
+	writel_relaxed(3, hw->base + SPI_SPINAL_LIB_CLK_DIVIDER);
+	writel_relaxed(3, hw->base + SPI_SPINAL_LIB_SS_DISABLE);
+	writel_relaxed(3, hw->base + SPI_SPINAL_LIB_SS_SETUP);
+	writel_relaxed(3, hw->base + SPI_SPINAL_LIB_SS_HOLD);
 	while(spi_spinal_lib_rsp_occupancy(hw)) spi_spinal_lib_rsp(hw); //Flush rsp
 	//TODO all chipselect disable
 
