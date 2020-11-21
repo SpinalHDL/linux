@@ -249,6 +249,7 @@ static int spinal_lib_gpio_probe(struct platform_device *pdev)
 	struct spinal_lib_gpio *chip;
 	struct resource *res;
 	int gpio, irq, ret, ngpio;
+    int i;
 
 	chip = devm_kzalloc(dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip) {
@@ -311,23 +312,34 @@ static int spinal_lib_gpio_probe(struct platform_device *pdev)
 	chip->gc.irq.map = &chip->irq_parent[0];
 
 	for (gpio = 0; gpio < ngpio; ++gpio) {
-		irq = platform_get_irq(pdev, gpio);
-		chip->irq_parent[gpio] = irq;
+		chip->irq_parent[gpio] = -1;
 		chip->self_ptr[gpio] = chip;
 		chip->trigger[gpio] = IRQ_TYPE_NONE;
+	}
+
+	if(of_find_property(pdev->dev.of_node, "interrupts-pin", NULL)){
+		for(i = 0;;i++){
+			if (of_property_read_u32_index(pdev->dev.of_node, "interrupts-pin", i, &gpio) != 0) break;
+			irq = platform_get_irq(pdev, i);
+			chip->irq_parent[gpio] = irq;
+		}
+	} else {
+		for (gpio = 0; gpio < ngpio; ++gpio) {
+			irq = platform_get_irq(pdev, gpio);
+			chip->irq_parent[gpio] = irq;
+		}
 	}
 
 	for (gpio = 0; gpio < ngpio; ++gpio) {
 		irq = chip->irq_parent[gpio];
 		if(irq < 0) continue;
-//		if (gpio > 1) continue;
 
 		irq_set_chained_handler_and_data(irq, spinal_lib_gpio_irq_handler, &chip->self_ptr[gpio]);
 		irq_set_parent(irq_find_mapping(chip->gc.irq.domain, gpio), irq);
 	}
 
 	platform_set_drvdata(pdev, chip);
-	dev_info(dev, "Spinal lib GPIO chip registered %d GPIOs\n", ngpio);
+	dev_info(dev, "Probe success\n");
 
 	return 0;
 }
