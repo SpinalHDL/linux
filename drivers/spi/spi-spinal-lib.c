@@ -142,7 +142,30 @@ static int spi_spinal_lib_txrx(struct spi_master *master, struct spi_device *spi
 					burst = spi_spinal_lib_rsp_occupancy(base);
 					ptr = hw->rx + hw->count;
 					end = ptr + burst;
-					if(hw->rx) {while(ptr != end) {*ptr++ = spi_spinal_lib_rsp(base);}}
+					if(hw->rx) {
+						while(ptr+7 < end){
+							u32 buf[8];
+							buf[0] = spi_spinal_lib_rsp(base);
+							buf[1] = spi_spinal_lib_rsp(base);
+							buf[2] = spi_spinal_lib_rsp(base);
+							buf[3] = spi_spinal_lib_rsp(base);
+							buf[4] = spi_spinal_lib_rsp(base);
+							buf[5] = spi_spinal_lib_rsp(base);
+							buf[6] = spi_spinal_lib_rsp(base);
+							buf[7] = spi_spinal_lib_rsp(base);
+							ptr[0] = buf[0];
+							ptr[1] = buf[1];
+							ptr[2] = buf[2];
+							ptr[3] = buf[3];
+							ptr[4] = buf[4];
+							ptr[5] = buf[5];
+							ptr[6] = buf[6];
+							ptr[7] = buf[7];
+							ptr += 8;
+
+						}
+						while(ptr != end) {*ptr++ = spi_spinal_lib_rsp(base);}
+					}
 					else	   {while(ptr != end) { ptr++;  spi_spinal_lib_rsp(base);}}
 					hw->count += burst;
 					token += burst;
