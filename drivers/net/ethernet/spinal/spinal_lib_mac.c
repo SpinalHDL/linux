@@ -149,10 +149,18 @@ static int spinal_lib_mac_rx(struct net_device *ndev)
     skb_reserve(skb, 2); /* align IP on 16B boundary */
     ptr = (u32*)(skb_put(skb, len)-2);
     while(word_count >= 4){
-        ptr[0] = spinal_lib_mac_rx_u32(base);
-        ptr[1] = spinal_lib_mac_rx_u32(base);
-        ptr[2] = spinal_lib_mac_rx_u32(base);
-        ptr[3] = spinal_lib_mac_rx_u32(base);
+        u32 buf[4];
+
+        buf[0] = spinal_lib_mac_rx_u32(base);
+        buf[1] = spinal_lib_mac_rx_u32(base);
+        buf[2] = spinal_lib_mac_rx_u32(base);
+        buf[3] = spinal_lib_mac_rx_u32(base);
+
+        ptr[0] = buf[0];
+        ptr[1] = buf[1];
+        ptr[2] = buf[2];
+        ptr[3] = buf[3];
+
         ptr += 4;
         word_count -= 4;
     }
