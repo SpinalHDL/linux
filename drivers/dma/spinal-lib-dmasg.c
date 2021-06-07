@@ -324,7 +324,6 @@ static void spinal_lib_dmasg_cyclic_segment_update(struct spinal_lib_dmasg_chan*
     unsigned long flags = 0;
     if(!init)
         spin_lock_irqsave(&chan->lock, flags);
-
 //    printk("spinal_lib_dmasg_cyclic_segment_update\n");
     while(1){
         dma_async_tx_callback callback;
@@ -366,9 +365,12 @@ static void spinal_lib_dmasg_cyclic_segment_update(struct spinal_lib_dmasg_chan*
         }
         if(desc->buffer_left == 0){
             desc->buffer_left = desc->buffer_len;
+            segment->hw.control |= DMASG_DESCRIPTOR_CONTROL_END_OF_PACKET;
         }
 
         chan->current_segment = segment->next;
+
+//        printk("DMA SEG %llu %u \n", segment->hw.from, segment->hw.control+1);
 
         if(callback){
             spin_unlock_irqrestore(&chan->lock, flags);
@@ -526,6 +528,13 @@ static void spinal_lib_dmasg_issue_pending(struct dma_chan *dchan)
 
     spin_lock_irqsave(&chan->lock, flags);
 
+    if(dmasg_busy(chan->priv->regs, chan->hardware_id)){
+        printk("DMA was already running, stopping it now ...\n");
+        dmasg_stop(chan->priv->regs, chan->hardware_id);
+        while(dmasg_busy(chan->priv->regs, chan->hardware_id));
+        printk("DMA stopped\n");
+    }
+
     if (list_empty(&chan->pending_list))
         goto done;
 
@@ -540,9 +549,11 @@ static void spinal_lib_dmasg_issue_pending(struct dma_chan *dchan)
     spinal_lib_dmasg_cyclic_segment_update(chan, true);
 
     dmasg_interrupt_config(chan->priv->regs, chan->hardware_id, DMASG_CHANNEL_INTERRUPT_DESCRIPTOR_COMPLETION_MASK);
-    dmasg_input_memory(chan->priv->regs, chan->hardware_id, 0, 16);
+    dmasg_input_memory(chan->priv->regs, chan->hardware_id, 0, 64);
     dmasg_output_stream (chan->priv->regs, chan->hardware_id, 0, 0, 0, 1);
+//    dmasg_direct_start(chan->priv->regs, chan->hardware_id, 1024*768*2, 1);
     dmasg_linked_list_start(chan->priv->regs, chan->hardware_id, (u32) head_segment->phys);
+
 
 
 
@@ -762,7 +773,34 @@ static struct platform_driver spinal_lib_vdma_driver = {
     .remove = spinal_lib_dmasg_remove,
 };
 
-module_platform_driver(spinal_lib_vdma_driver);
+static __init int spinal_lib_dmasg_init(void)
+{
+    int ret;
+    struct device_node *np;
+
+    ret = platform_driver_register(&spinal_lib_vdma_driver);
+    if (ret)
+        return ret;
+
+    if (IS_ENABLED(CONFIG_OF_ADDRESS) && of_chosen) {
+        for_each_child_of_node(of_chosen, np) {
+            if (of_device_is_compatible(np, "spinal,lib-dmasg"))
+                of_platform_device_create(np, NULL, NULL);
+        }
+    }
+
+    return 0;
+}
+
+static void __exit spinal_lib_dmasg_exit(void)
+{
+    platform_driver_unregister(&spinal_lib_vdma_driver);
+}
+
+subsys_initcall(spinal_lib_dmasg_init);
+module_exit(spinal_lib_dmasg_exit);
+
+//module_platform_driver(spinal_lib_vdma_driver);
 
 MODULE_AUTHOR("Spinal");
 MODULE_DESCRIPTION("SpinalHDL DMASG driver");
