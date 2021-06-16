@@ -283,6 +283,14 @@ int spinal_lib_mac_tx(struct sk_buff *skb, struct net_device *ndev)
         goto drop;
     }
 
+//    if(spinal_lib_mac_tx_availability(base) < word_count+1) {
+//        priv->stats.tx_dropped++;
+//        dev_kfree_skb_any(skb);
+//        return NETDEV_TX_OK;
+//
+//        return NETDEV_TX_BUSY;
+//    }
+
     while(!spinal_lib_mac_tx_ready(base));
     spinal_lib_mac_tx_u32(base, bits);
     ptr = (u32*)(skb->data-2);

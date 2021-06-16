@@ -121,25 +121,20 @@ static void spinalfb_destroy(struct fb_info *info)
 
 
 int spinalfb_check_var(struct fb_var_screeninfo *var, struct fb_info *info){
-    dev_info(info->dev, "##### fb_var_screeninfo2 #####\n");
+//    dev_info(info->dev, "##### fb_var_screeninfo2 #####\n");
+
     if (var->bits_per_pixel != 16)
         return -EINVAL;
 
     if(var->transp.length)
         return -EINVAL;
 
-    dev_info(info->dev, "%d %d %d\n", var->xres, var->xres_virtual, var->pixclock);
+//    dev_info(info->dev, "%d %d %d\n", var->xres, var->xres_virtual, var->pixclock);
 
 
     var->blue.offset = 0;
     var->green.offset = var->blue.length;
     var->red.offset = var->green.offset + var->green.length;
-
-
-//    fb_find_mode(*var, info, const char *mode_option,
-//         const struct fb_videomode *db, unsigned int dbsize,
-//         const struct fb_videomode *default_mode,
-//         unsigned int default_bpp)
 
     return 0;
 }
@@ -165,7 +160,7 @@ int spinalfb_dma_stop(struct fb_info *info){
     dmaengine_terminate_async(par->dma);
     dmaengine_synchronize(par->dma);
     par->dma_running = 0;
-    dev_info(info->dev, "DMA stopped\n");
+    spinalfb_stop(par->base);
     return 0;
 }
 
@@ -181,7 +176,6 @@ int spinalfb_dma_start(struct fb_info *info){
         spinalfb_dma_stop(info);
 
     bytes = var->xres_virtual * var->yres_virtual * var->bits_per_pixel/8;
-    dev_info(info->dev, "DMA configured %u\n", bytes);
 
     desc = dmaengine_prep_dma_cyclic(par->dma,
         info->fix.smem_start,
@@ -204,7 +198,8 @@ int spinalfb_dma_start(struct fb_info *info){
     dma_async_issue_pending(par->dma);
 
     par->dma_running = 1;
-    dev_info(info->dev, "DMA running\n");
+    spinalfb_start(par->base);
+
     return 0;
 }
 
@@ -216,22 +211,14 @@ int spinalfb_set_par(struct fb_info *info){
     int err;
     int xoff, yoff;
 
-    dev_info(info->dev, "##### spinalfb_set_par #####\n");
-
-
-//    if (!fb_find_mode(var, info, "", NULL, 0, 0, 16)) {
-//        dev_err(info->dev, "cannot find valid video mode\n");
+    dev_info(info->dev, "set resolution as %d x %d\n", var->xres, var->yres);
+//    dev_info(info->dev, "%d %d %d\n", var->xres, var->xres_virtual, var->pixclock);
+//    dev_info(info->dev, "%d %d\n", var->hsync_len, var->vsync_len);
+//    dev_info(info->dev, "%d %d %d %d\n", var->left_margin, var->right_margin, var->upper_margin, var->lower_margin);
+//    dev_info(info->dev, "%d\n",(int) info->mode);
+//    if(info->mode){
+//        dev_info(info->dev, "%d %d %d %d\n", info->mode->pixclock, info->mode->right_margin, info->mode->upper_margin, info->mode->lower_margin);
 //    }
-
-    dev_info(info->dev, "%d %d %d\n", var->xres, var->xres_virtual, var->pixclock);
-    dev_info(info->dev, "%d %d\n", var->hsync_len, var->vsync_len);
-    dev_info(info->dev, "%d %d %d %d\n", var->left_margin, var->right_margin, var->upper_margin, var->lower_margin);
-    dev_info(info->dev, "%d\n",(int) info->mode);
-    if(info->mode)
-        dev_info(info->dev, "%d %d %d %d\n", info->mode->pixclock, info->mode->right_margin, info->mode->upper_margin, info->mode->lower_margin);
-
-
-
 
     if (var->pixclock) {
         if ((err = clk_set_rate(par->clkin, div_u64(1000000000000ull, var->pixclock)))) {
@@ -278,6 +265,10 @@ int spinalfb_set_par(struct fb_info *info){
 //    return 0;
 //}
 
+//int spinalfb_pan_display(struct fb_var_screeninfo *var, struct fb_info *info){
+//    return 0;
+//}
+
 static const struct fb_ops spinalfb_ops = {
     .owner      = THIS_MODULE,
     .fb_destroy = spinalfb_destroy,
@@ -286,7 +277,8 @@ static const struct fb_ops spinalfb_ops = {
     .fb_copyarea    = cfb_copyarea,
     .fb_imageblit   = cfb_imageblit,
     .fb_check_var   = spinalfb_check_var,
-    .fb_set_par     = spinalfb_set_par
+    .fb_set_par     = spinalfb_set_par,
+//    .fb_pan_display = spinalfb_pan_display
 //    .fb_ioctl       = spinalfb_ioctl,
 //    .fb_compat_ioctl = spinalfb_compat_ioctl
 };
@@ -294,9 +286,6 @@ static const struct fb_ops spinalfb_ops = {
 static struct spinalfb_format spinalfb_formats[] = SPINALFB_FORMATS;
 
 struct spinalfb_params {
-    u32 width;
-    u32 height;
-    u32 stride;
     struct spinalfb_format *format;
 };
 
@@ -307,24 +296,6 @@ static int spinalfb_parse_dt(struct platform_device *pdev,
     int ret;
     const char *format;
     int i;
-
-    ret = of_property_read_u32(np, "width", &params->width);
-    if (ret) {
-        dev_err(&pdev->dev, "Can't parse width property\n");
-        return ret;
-    }
-
-    ret = of_property_read_u32(np, "height", &params->height);
-    if (ret) {
-        dev_err(&pdev->dev, "Can't parse height property\n");
-        return ret;
-    }
-
-    ret = of_property_read_u32(np, "stride", &params->stride);
-    if (ret) {
-        dev_err(&pdev->dev, "Can't parse stride property\n");
-        return ret;
-    }
 
     ret = of_property_read_string(np, "format", &format);
     if (ret) {
@@ -351,10 +322,6 @@ static int spinalfb_parse_pd(struct platform_device *pdev,
 {
     struct spinalfb_platform_data *pd = dev_get_platdata(&pdev->dev);
     int i;
-
-    params->width = pd->width;
-    params->height = pd->height;
-    params->stride = pd->stride;
 
     params->format = NULL;
     for (i = 0; i < ARRAY_SIZE(spinalfb_formats); i++) {
@@ -524,7 +491,6 @@ static int spinalfb_probe(struct platform_device *pdev)
     struct spinalfb_par *par;
     struct resource *mem, *reg;
     const char *mode_option;
-    dev_info(&pdev->dev, "\n\n##### RAWRR fb #####\n\n");
 
     if (fb_get_options("spinalfb", (char **)&mode_option))
         return -ENODEV;
@@ -539,32 +505,26 @@ static int spinalfb_probe(struct platform_device *pdev)
         return ret;
 
 
-
-    printk("x\n");
     mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
     if (!mem) {
         dev_err(&pdev->dev, "No memory resource\n");
         return -EINVAL;
     }
 
-    printk("y\n");
     reg = platform_get_resource(pdev, IORESOURCE_MEM, 1);
     if (!reg) {
         dev_err(&pdev->dev, "No vga reg resource\n");
         return -ENXIO;
     }
 
-    printk("a\n");
     info = framebuffer_alloc(sizeof(struct spinalfb_par), &pdev->dev);
     if (!info)
         return -ENOMEM;
     platform_set_drvdata(pdev, info);
 
-    printk("b\n");
     par = info->par;
     par->dma_running = 0;
 
-    printk("c\n");
     par->base = devm_ioremap_resource(&pdev->dev, reg);
     if (IS_ERR(par->base)) {
         dev_err(&pdev->dev, "Can't ioremap reg\n");
@@ -579,24 +539,20 @@ static int spinalfb_probe(struct platform_device *pdev)
 
 
 
-    //1024x768M@60m
-
     if(!mode_option){
         ret = of_property_read_string(pdev->dev.of_node, "mode", &mode_option);
         if (ret) {
-            mode_option = "640x480@60m"; //1280x1024@60me
+            mode_option = "640x480@60m";
         }
     }
 
 
-    dev_info(&pdev->dev, "Video mode : %s\n", mode_option);
     info->fbops = &spinalfb_ops;
     info->flags = FBINFO_DEFAULT | FBINFO_MISC_FIRMWARE;
 
     info->fix = spinalfb_fix;
     info->fix.smem_start = mem->start;
     info->fix.smem_len = resource_size(mem);
-    info->fix.line_length = params.stride;
 
     if (!fb_find_mode(&info->var, info, mode_option,
               NULL, 0, NULL, 16)) {
@@ -604,25 +560,6 @@ static int spinalfb_probe(struct platform_device *pdev)
         return -EINVAL;
     }
 
-
-    dev_info(&pdev->dev, "var=>\n");
-    dev_info(&pdev->dev, "%d %d %d\n", info->var.xres, info->var.xres_virtual, info->var.pixclock);
-    dev_info(&pdev->dev, "%d %d\n", info->var.hsync_len, info->var.vsync_len);
-    dev_info(&pdev->dev, "%d %d %d %d\n", info->var.left_margin, info->var.right_margin, info->var.upper_margin, info->var.lower_margin);
-    dev_info(&pdev->dev, "%d\n",(int) info->mode);
-
-
-
-//    info->var = spinalfb_var;
-//    info->var.xres = params.width;
-//    info->var.yres = params.height;
-//    info->var.xres_virtual = params.width;
-//    info->var.yres_virtual = params.height;
-//    info->var.bits_per_pixel = params.format->bits_per_pixel;
-//    info->var.red = params.format->red;
-//    info->var.green = params.format->green;
-//    info->var.blue = params.format->blue;
-//    info->var.transp = params.format->transp;
 
     info->apertures = alloc_apertures(1);
     if (!info->apertures) {
@@ -659,16 +596,6 @@ static int spinalfb_probe(struct platform_device *pdev)
                  params.format->name,
                  info->var.xres, info->var.yres,
                  info->var.bits_per_pixel, info->fix.line_length);
-
-//    if (!fb_find_mode(&info->var, info, mode_option, ps3fb_modedb,
-//              ARRAY_SIZE(ps3fb_modedb),
-//              ps3fb_vmode(par->new_mode_id), 32)) {
-//        retval = -EINVAL;
-//        goto err_fb_dealloc;
-//    }
-
-//    fb_videomode_to_modelist(ps3fb_modedb, ARRAY_SIZE(ps3fb_modedb),
-//                 &info->modelist);
 
     ret = register_framebuffer(info);
     if (ret < 0) {

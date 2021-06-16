@@ -54,7 +54,7 @@ void spinal_mmcme2_solve(struct clk_hw *hw, unsigned long rate, unsigned long *p
     u32 div0;
     u64 best_score = -1;
     struct spinal_mmcme2 *spinal_mmcme2 = container_of(hw, struct spinal_mmcme2, clkout0);
-    dev_info(&spinal_mmcme2->pdev->dev, "### spinal_mmcme2_solve %lu %lu ###\n", rate, *parent_rate);
+//    dev_info(&spinal_mmcme2->pdev->dev, "### spinal_mmcme2_solve %lu %lu ###\n", rate, *parent_rate);
 
 
     for(div = 2;div < 106; div+=2){
@@ -84,7 +84,7 @@ void spinal_mmcme2_solve(struct clk_hw *hw, unsigned long rate, unsigned long *p
     }
 
 
-    dev_info(&spinal_mmcme2->pdev->dev, "### %u %u %u %u ###\n", result->clkout0, result->mul, result->div, result->div0);
+//    dev_info(&spinal_mmcme2->pdev->dev, "### %u %u %u %u ###\n", result->clkout0, result->mul, result->div, result->div0);
 }
 
 
@@ -107,7 +107,7 @@ int spinal_mmcme2_set_rate(struct clk_hw *hw, unsigned long rate, unsigned long 
     struct spinal_mmcme2_state state;
     u32 tmp;
     u32 clkout0_r1, clkfbout_r1, divin;
-    dev_info(&spinal_mmcme2->pdev->dev, "### spinal_mmcme2_set_rate %lu %lu ###\n", rate, parent_rate);
+    dev_info(&spinal_mmcme2->pdev->dev, "Set frequency as %lu hz\n", rate);
 
     spinal_mmcme2_solve(hw, rate, &parent_rate, &state);
 
@@ -115,7 +115,7 @@ int spinal_mmcme2_set_rate(struct clk_hw *hw, unsigned long rate, unsigned long 
     divin = dbus_read(DIVIN);
     clkout0_r1 = dbus_read(CLKOUT0_R1);
     clkfbout_r1 = dbus_read(CLKFBOUT_R1);
-    dev_info(&spinal_mmcme2->pdev->dev, "### Was %x %x %x %x %x ###\n", divin, clkout0_r1, dbus_read(CLKOUT0_R2), clkfbout_r1, dbus_read(CLKFBOUT_R2));
+//    dev_info(&spinal_mmcme2->pdev->dev, "### Was %x %x %x %x %x ###\n", divin, clkout0_r1, dbus_read(CLKOUT0_R2), clkfbout_r1, dbus_read(CLKFBOUT_R2));
 
     dbus_write(HIGH_TIME(63) | LOW_TIME(63) | (clkout0_r1 & 0xF000), CLKOUT0_R1);
     dbus_write(HIGH_TIME(63) | LOW_TIME(63) | (divin & 0xE000), DIVIN);
@@ -132,8 +132,8 @@ int spinal_mmcme2_set_rate(struct clk_hw *hw, unsigned long rate, unsigned long 
     spinal_mmcme2->state = state;
 
 
-    dev_info(&spinal_mmcme2->pdev->dev, "### div : %x\n", HIGH_TIME(state.div/2) | LOW_TIME(state.div/2 + (state.div%2)) | (divin & 0xE000));
-    dev_info(&spinal_mmcme2->pdev->dev, "### Now %x %x %x %x %x ###\n", divin, dbus_read(CLKOUT0_R1), dbus_read(CLKOUT0_R2), dbus_read(CLKFBOUT_R1), dbus_read(CLKFBOUT_R2));
+//    dev_info(&spinal_mmcme2->pdev->dev, "### div : %x\n", HIGH_TIME(state.div/2) | LOW_TIME(state.div/2 + (state.div%2)) | (divin & 0xE000));
+//    dev_info(&spinal_mmcme2->pdev->dev, "### Now %x %x %x %x %x ###\n", divin, dbus_read(CLKOUT0_R1), dbus_read(CLKOUT0_R2), dbus_read(CLKFBOUT_R1), dbus_read(CLKFBOUT_R2));
 
 
     return 0;
@@ -144,15 +144,15 @@ unsigned long   spinal_mmcme2_recalc_rate(struct clk_hw *hw,
                 unsigned long parent_rate){
     struct spinal_mmcme2 *spinal_mmcme2 = container_of(hw, struct spinal_mmcme2, clkout0);
     struct spinal_mmcme2_state *state = &spinal_mmcme2->state;
-    dev_info(&spinal_mmcme2->pdev->dev, "### spinal_mmcme2_recalc_rate %lu ###\n", parent_rate);
+//    dev_info(&spinal_mmcme2->pdev->dev, "### spinal_mmcme2_recalc_rate %lu ###\n", parent_rate);
 
     return div_u64(((u64)(parent_rate/state->div)) * state->mul, state->div0);
 }
 
 long spinal_mmcme2_round_rate(struct clk_hw *hw, unsigned long rate, unsigned long *parent_rate){
-    struct spinal_mmcme2 *spinal_mmcme2 = container_of(hw, struct spinal_mmcme2, clkout0);
+//    struct spinal_mmcme2 *spinal_mmcme2 = container_of(hw, struct spinal_mmcme2, clkout0);
     struct spinal_mmcme2_state state;
-    dev_info(&spinal_mmcme2->pdev->dev, "### spinal_mmcme2_round_rate %lu %lu ###\n", rate, *parent_rate);
+//    dev_info(&spinal_mmcme2->pdev->dev, "### spinal_mmcme2_round_rate %lu %lu ###\n", rate, *parent_rate);
 
     spinal_mmcme2_solve(hw, rate, parent_rate, &state);
     return state.clkout0;
@@ -227,7 +227,7 @@ static int spinal_mmcme2_probe(struct platform_device *pdev)
         return ret;
     }
 
-    dev_info(&pdev->dev, "Probe\n");
+    dev_info(&pdev->dev, "Probed !\n");
     return 0;
 }
 
