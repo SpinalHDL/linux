@@ -1,6 +1,8 @@
 #define DEBUG
 
- // cd $SAXON_ROOT/buildroot-build && make linux-rebuild && HOST_DIR=$SAXON_ROOT/buildroot-build/host BINARIES_DIR=$SAXON_ROOT/buildroot-build/images TARGET_DIR=$SAXON_ROOT/buildroot-build/target $SAXON_ROOT/buildroot-spinal-saxon/boards/common/post_build.sh && saxon_fpga_load
+// cd $SAXON_ROOT/buildroot-build && make linux-rebuild && HOST_DIR=$SAXON_ROOT/buildroot-build/host BINARIES_DIR=$SAXON_ROOT/buildroot-build/images TARGET_DIR=$SAXON_ROOT/buildroot-build/target $SAXON_ROOT/buildroot-spinal-saxon/boards/common/post_build.sh && saxon_fpga_load
+// https://aniembedded.com/2011/11/15/linux-usb-tests-using-gadget-zero-driver/
+//https://mjmwired.net/kernel/Documentation/usb/gadget_configfs.rst
 
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -210,14 +212,13 @@ static void spinal_udc_set_address(struct spinal_udc *udc){
     int ret;
     dev_dbg(udc->dev, "%s\n", __func__);
 
-    ep0->is_in = 1;
     req->usb_req.length = 0;
     req->usb_req.zero = 1;
     req->usb_req.short_not_ok = 1;
     req->usb_req.complete = spinal_udc_set_address_completion;
-    ret = __spinal_udc_ep0_queue(ep0, req);
+    writel(0x200 | udc->setup.wValue, udc->addr + USB_DEVICE_ADDRESS);
 
-    writel(0x100 | udc->setup.wValue, udc->addr + USB_DEVICE_ADDRESS);
+    ret = __spinal_udc_ep0_queue(ep0, req);
 
     if (ret == 0)
         return;
@@ -259,9 +260,7 @@ static void spinal_udc_done(struct spinal_udc_ep *ep, struct spinal_udc_req *req
 
 static void spinal_udc_nuke(struct spinal_udc_ep *ep, int status)
 {
-    struct spinal_udc * udc = ep->udc;
     struct spinal_udc_req *req;
-    u32 ep_status;
     dev_dbg(ep->udc->dev, "%s\n", __func__);
 
     //Clear descriptors head
@@ -293,11 +292,125 @@ static void spinal_udc_reset_irq(struct spinal_udc *udc){
 }
 
 static void spinal_udc_get_status(struct spinal_udc* udc){
-    dev_dbg(udc->dev, "%s UNIMPLEMENTED\n", __func__);
-}
+    struct spinal_udc_ep *ep0 = &udc->ep[0];
+    struct spinal_udc_req *req    = &udc->ep0_req;
+    struct spinal_udc_ep *target_ep;
+    u16 status = 0;
+    int epnum;
+    u32 halt;
+    int ret;
 
+    dev_dbg(udc->dev, "%s\n", __func__);
+
+    switch (udc->setup.bRequestType & USB_RECIP_MASK) {
+    case USB_RECIP_DEVICE:
+        /* Get device status */
+        status = 1 << USB_DEVICE_SELF_POWERED;
+        if (udc->remote_wkp)
+            status |= (1 << USB_DEVICE_REMOTE_WAKEUP);
+        break;
+    case USB_RECIP_INTERFACE:
+        break;
+    case USB_RECIP_ENDPOINT:
+        epnum = udc->setup.wIndex & USB_ENDPOINT_NUMBER_MASK;
+        target_ep = &udc->ep[epnum];
+        halt = readl(udc->addr + target_ep->epnumber*4) & USB_DEVICE_EP_STALL;
+        if (udc->setup.wIndex & USB_DIR_IN) {
+            if (!target_ep->is_in)
+                goto stall;
+        } else {
+            if (target_ep->is_in)
+                goto stall;
+        }
+        if (halt)
+            status = 1 << USB_ENDPOINT_HALT;
+        break;
+    default:
+        goto stall;
+    }
+
+    req->usb_req.length = 2;
+    req->usb_req.complete = NULL;
+    *(u16 *)req->usb_req.buf = cpu_to_le16(status);
+
+    ret = __spinal_udc_ep0_queue(ep0, req);
+    if (ret == 0)
+        return;
+stall:
+    dev_err(udc->dev, "Can't respond to getstatus request\n");
+    spinal_udc_ep0_stall(udc);
+}
 static void spinal_udc_set_clear_feature(struct spinal_udc* udc){
-    dev_dbg(udc->dev, "%s UNIMPLEMENTED\n", __func__);
+
+    struct spinal_udc_ep *ep0 = &udc->ep[0];
+    struct spinal_udc_req *req    = &udc->ep0_req;
+    struct spinal_udc_ep *target_ep;
+    u8 endpoint;
+    u8 outinbit;
+    int flag = (udc->setup.bRequest == USB_REQ_SET_FEATURE ? 1 : 0);
+    int ret;
+    u32 ep_status;
+
+    dev_dbg(udc->dev, "%s\n", __func__);
+
+    switch (udc->setup.bRequestType) {
+    case USB_RECIP_DEVICE:
+        switch (udc->setup.wValue) {
+        case USB_DEVICE_TEST_MODE:
+            /*
+             * The Test Mode will be executed
+             * after the status phase.
+             */
+            break;
+        case USB_DEVICE_REMOTE_WAKEUP:
+            if (flag)
+                udc->remote_wkp = 1;
+            else
+                udc->remote_wkp = 0;
+            break;
+        default:
+            spinal_udc_ep0_stall(udc);
+            break;
+        }
+        break;
+    case USB_RECIP_ENDPOINT:
+        if (!udc->setup.wValue) {
+            endpoint = udc->setup.wIndex & USB_ENDPOINT_NUMBER_MASK;
+            target_ep = &udc->ep[endpoint];
+            outinbit = udc->setup.wIndex & USB_ENDPOINT_DIR_MASK;
+            outinbit = outinbit >> 7;
+
+            /* Make sure direction matches.*/
+            if (outinbit != target_ep->is_in) {
+                spinal_udc_ep0_stall(udc);
+                return;
+            }
+            ep_status = readl(udc->addr + target_ep->epnumber*4);
+            if (!endpoint) {
+                /* Clear the stall.*/
+                spinal_udc_ep_status_mask(target_ep, ~USB_DEVICE_EP_STALL, 0);
+            } else {
+                if (flag) {
+                    spinal_udc_ep_status_mask(target_ep, 0, USB_DEVICE_EP_STALL);
+                } else {
+                    spinal_udc_ep_status_mask(target_ep, ~(USB_DEVICE_EP_STALL | USB_DEVICE_EP_PHASE(1)), 0);
+                }
+            }
+        }
+        break;
+    default:
+        spinal_udc_ep0_stall(udc);
+        return;
+    }
+
+    req->usb_req.length = 0;
+    req->usb_req.complete = NULL;
+    ret = __spinal_udc_ep0_queue(ep0, req);
+    if (ret == 0)
+        return;
+
+    dev_err(udc->dev, "Can't respond to SET/CLEAR FEATURE\n");
+    spinal_udc_ep0_stall(udc);
 }
 
 static void spinal_udc_ep0_status(struct spinal_udc* udc){
@@ -368,7 +481,6 @@ static void spinal_udc_setup_irq(struct spinal_udc *udc){
                 USB_TYPE_STANDARD | USB_RECIP_DEVICE))
             break;
 
-        udc->ep0_state = EP0_STATE_STATUS;
         spinal_udc_set_address(udc);
         return;
     case USB_REQ_CLEAR_FEATURE:
@@ -415,7 +527,7 @@ static void spinal_udc_ep_irq(struct spinal_udc_ep *ep){
 
             length = (status & 0xFFFF) - desc->offset;
             dev_dbg(udc->dev, "%s %x %d\n", __func__, status, length);
-            if(ep->is_in){
+            if(!ep->is_in){
                 memcpy(req->usb_req.buf + req->usb_req.actual, desc->mapping + 12 + desc->offset, length);
             }
 
@@ -423,7 +535,7 @@ static void spinal_udc_ep_irq(struct spinal_udc_ep *ep){
             list_move_tail(&desc->udc_node, &udc->mp_small);
             list_del(&desc->req_node);
 
-            if(desc->req_completion){
+            if(desc->req_completion || length != ep->ep_usb.maxpacket){
                 req->usb_req.status = 0;
                 spinal_udc_done(ep, req, 0);
                 break;
@@ -709,37 +821,33 @@ static int spinal_udc_ep_enable(struct usb_ep *_ep,
  */
 static int spinal_udc_ep_disable(struct usb_ep *_ep)
 {
-    struct spinal_udc_ep *ep = to_spinal_udc_ep(_ep);
-    struct spinal_udc *udc = ep->udc;
-    dev_dbg(udc->dev, "%s call, UNIMPLMENTED", __func__);
-//    struct xusb_ep *ep;
-//    unsigned long flags;
-//    u32 epcfg;
-//    struct xusb_udc *udc;
-//
-//    if (!_ep) {
-//        pr_debug("%s: invalid ep\n", __func__);
-//        return -EINVAL;
-//    }
-//
-//    ep = to_xusb_ep(_ep);
-//    udc = ep->udc;
-//
-//    spin_lock_irqsave(&udc->lock, flags);
-//
-//    spinal_udc_nuke(ep, -ESHUTDOWN);
-//
-//    /* Restore the endpoint's pristine config */
-//    ep->desc = NULL;
-//    ep->ep_usb.desc = NULL;
-//
-//    dev_dbg(udc->dev, "USB Ep %d disable\n ", ep->epnumber);
-//    /* Disable the endpoint.*/
-//    epcfg = udc->read_fn(udc->addr + ep->offset);
-//    epcfg &= ~XUSB_EP_CFG_VALID_MASK;
-//    udc->write_fn(udc->addr, ep->offset, epcfg);
-//
-//    spin_unlock_irqrestore(&udc->lock, flags);
+    struct spinal_udc_ep *ep;
+    struct spinal_udc *udc;
+    unsigned long flags;
+
+    if (!_ep) {
+        pr_debug("%s: invalid ep\n", __func__);
+        return -EINVAL;
+    }
+
+    ep = to_spinal_udc_ep(_ep);
+    udc = ep->udc;
+    dev_dbg(udc->dev, "%s call", __func__);
+
+    spin_lock_irqsave(&udc->lock, flags);
+
+    spinal_udc_nuke(ep, -ESHUTDOWN);
+
+    /* Restore the endpoint's pristine config */
+    ep->desc = NULL;
+    ep->ep_usb.desc = NULL;
+
+    dev_dbg(udc->dev, "USB Ep %d disable\n ", ep->epnumber);
+
+    /* Disable the endpoint.*/
+    writel(0, udc->addr + ep->epnumber*4);
+
+    spin_unlock_irqrestore(&udc->lock, flags);
     return 0;
 }
 
@@ -884,6 +992,7 @@ static void spinal_udc_ep_free_request(struct usb_ep *_ep, struct usb_request *_
     kfree(req);
 }
 
+//TODO WARNING, pid out shorter than max length will not discard subsequant descriptors.
 static void spinal_udc_ep_desc_refill(struct spinal_udc_ep *ep){
     struct spinal_udc *udc = ep->udc;
     if (!list_empty(&ep->reqs)) {
@@ -938,7 +1047,7 @@ static void spinal_udc_ep_desc_refill(struct spinal_udc_ep *ep){
 
 
 
-        dev_dbg(udc->dev, "%s commited %d %d %d %d", __func__, ep->is_in, length, desc->req_completion, packet_end);
+        dev_dbg(udc->dev, "%s commited %d %d %d %d left %d\n", __func__, ep->is_in, length, desc->req_completion, packet_end, req->usb_req.length - req->commited_length);
     }
 }
 
@@ -968,9 +1077,17 @@ static int __spinal_udc_ep0_queue(struct spinal_udc_ep *ep0, struct spinal_udc_r
         udc->ep0_completion = req->usb_req.complete;
         req->usb_req.complete = spinal_udc_ep0_data_completion;
         udc->ep0_state = EP0_STATE_STATUS;
+
+        if(req->usb_req.length == 0){
+            req->usb_req.status = 0;
+            req->usb_req.complete(&ep0->ep_usb, &req->usb_req);
+        } else {
+            list_add_tail(&req->ep_node, &ep0->reqs);
+        }
+    } else {
+        list_add_tail(&req->ep_node, &ep0->reqs);
     }
 
-    list_add_tail(&req->ep_node, &ep0->reqs);
 
     spinal_udc_ep_desc_refill(ep0);
 
@@ -1219,6 +1336,11 @@ static int spinal_udc_ram_init(struct spinal_udc *udc)
 
     left   -= 0x40+8;
     offset += 0x40+8;
+
+    for(tmp = 0; tmp < left; tmp += 4){
+        writel(tmp + (u32)&left, udc->addr + offset + tmp);
+    }
+
 
     udc->ep0_setup.address = offset;
     udc->ep0_setup.mapping = udc->addr + offset;
