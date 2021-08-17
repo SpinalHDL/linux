@@ -4,6 +4,11 @@
 // https://aniembedded.com/2011/11/15/linux-usb-tests-using-gadget-zero-driver/
 //https://mjmwired.net/kernel/Documentation/usb/gadget_configfs.rst
 
+/*
+ echo "3" > /proc/sys/kernel/printk
+ ./gadget.sh
+ */
+
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
@@ -28,6 +33,8 @@ static const char ep0name[] = "ep0";
 #define EPNAME_SIZE     4
 #define DESC_HEADER_SIZE 12
 #define DESC_SMALL_SIZE (64+4)
+
+#define SPINAL_UDC_MAX_ENDPOINTS 16
 
 
 #define USB_DEVICE_FRAME 0xFF00
@@ -118,8 +125,6 @@ struct spinal_udc {
     struct device *dev;
     u32 usb_state;
     u32 remote_wkp;
-    u32 setupseqtx;
-    u32 setupseqrx;
     void __iomem *addr;
     spinlock_t lock;
     s32 ep_count;
@@ -147,6 +152,7 @@ static const struct usb_endpoint_descriptor config_bulk_out_desc = {
 
 static int __spinal_udc_ep0_queue(struct spinal_udc_ep *ep0, struct spinal_udc_req *req);
 static void spinal_udc_ep_desc_refill(struct spinal_udc_ep *ep);
+static void spinal_udc_nuke(struct spinal_udc_ep *ep, int status);
 
 
 
@@ -176,19 +182,42 @@ static void spinal_udc_ep_status_mask_no_halt(struct spinal_udc_ep *ep, u32 and,
 
 
 static void spinal_udc_stop_activity(struct spinal_udc *udc){
-    dev_dbg(udc->dev, "%s UNIMPLEMENTED\n", __func__);
+    struct spinal_udc_ep *ep;
+    int i;
+    dev_dbg(udc->dev, "%s\n", __func__);
+
+    for (i = 0; i < SPINAL_UDC_MAX_ENDPOINTS; i++) {
+        ep = &udc->ep[i];
+        spinal_udc_nuke(ep, -ESHUTDOWN);
+    }
 }
 
 static void spinal_udc_clear_stall_all_ep(struct spinal_udc *udc){
-    dev_dbg(udc->dev, "%s UNIMPLEMENTED\n", __func__);
-}
-
-static void spinal_udc_ep0_stall(struct spinal_udc *udc){
+    struct spinal_udc_ep *ep;
+    int i;
     dev_dbg(udc->dev, "%s\n", __func__);
-    spinal_udc_ep_status_mask(&udc->ep[0], ~0xFFF0, USB_DEVICE_EP_STALL);
+
+    for (i = 0; i < SPINAL_UDC_MAX_ENDPOINTS; i++) {
+        ep = &udc->ep[i];
+        spinal_udc_ep_status_mask(ep, ~(USB_DEVICE_EP_STALL | USB_DEVICE_EP_PHASE(1)), 0);
+    }
+}
+
+static void spinal_udc_ep_stall(struct spinal_udc *udc, struct spinal_udc_ep* ep, bool throw_desc){
+    dev_dbg(udc->dev, "%s %d\n", __func__, ep->epnumber);
+    spinal_udc_ep_status_mask(ep, ~(throw_desc ? 0xFFF0 : 0), USB_DEVICE_EP_STALL);
 
 }
 
+static void spinal_udc_ep0_stall(struct spinal_udc *udc, bool throw_desc){
+    spinal_udc_ep_stall(udc, udc->ep, throw_desc);
+}
+
+
+static void spinal_udc_ep_unstall(struct spinal_udc *udc, struct spinal_udc_ep* ep, bool clear_phase){
+    dev_dbg(udc->dev, "%s %d %d\n", __func__, ep->epnumber, clear_phase);
+    spinal_udc_ep_status_mask(ep, ~(USB_DEVICE_EP_STALL | (clear_phase ? USB_DEVICE_EP_PHASE(1) : 0)), 0);
+}
 
 
 static void  spinal_udc_set_address_completion(struct usb_ep *_ep, struct usb_request *_req){
@@ -224,7 +253,7 @@ static void spinal_udc_set_address(struct spinal_udc *udc){
         return;
 
     dev_err(udc->dev, "Can't respond to SET ADDRESS request\n");
-    spinal_udc_ep0_stall(udc);
+    spinal_udc_ep0_stall(udc, 1);
 }
 
 
@@ -298,7 +327,7 @@ static void spinal_udc_get_status(struct spinal_udc* udc){
     u16 status = 0;
     int epnum;
     u32 halt;
-    int ret;
+    int ret = 0;
 
     dev_dbg(udc->dev, "%s\n", __func__);
 
@@ -315,12 +344,14 @@ static void spinal_udc_get_status(struct spinal_udc* udc){
         epnum = udc->setup.wIndex & USB_ENDPOINT_NUMBER_MASK;
         target_ep = &udc->ep[epnum];
         halt = readl(udc->addr + target_ep->epnumber*4) & USB_DEVICE_EP_STALL;
-        if (udc->setup.wIndex & USB_DIR_IN) {
-            if (!target_ep->is_in)
-                goto stall;
-        } else {
-            if (target_ep->is_in)
-                goto stall;
+        if(target_ep->epnumber) {
+            if (udc->setup.wIndex & USB_DIR_IN) {
+                if (!target_ep->is_in)
+                    goto stall;
+            } else {
+                if (target_ep->is_in)
+                    goto stall;
+            }
         }
         if (halt)
             status = 1 << USB_ENDPOINT_HALT;
@@ -337,8 +368,8 @@ static void spinal_udc_get_status(struct spinal_udc* udc){
     if (ret == 0)
         return;
 stall:
-    dev_err(udc->dev, "Can't respond to getstatus request\n");
-    spinal_udc_ep0_stall(udc);
+    dev_err(udc->dev, "Can't respond to getstatus request %d %d %d %d\n", udc->setup.bRequestType & USB_RECIP_MASK, udc->setup.wIndex & USB_DIR_IN, target_ep->is_in, ret);
+    spinal_udc_ep0_stall(udc, 1);
 }
 static void spinal_udc_set_clear_feature(struct spinal_udc* udc){
 
@@ -369,7 +400,7 @@ static void spinal_udc_set_clear_feature(struct spinal_udc* udc){
                 udc->remote_wkp = 0;
             break;
         default:
-            spinal_udc_ep0_stall(udc);
+            spinal_udc_ep0_stall(udc, 1);
             break;
         }
         break;
@@ -382,24 +413,24 @@ static void spinal_udc_set_clear_feature(struct spinal_udc* udc){
 
             /* Make sure direction matches.*/
             if (outinbit != target_ep->is_in) {
-                spinal_udc_ep0_stall(udc);
+                spinal_udc_ep0_stall(udc, 1);
                 return;
             }
             ep_status = readl(udc->addr + target_ep->epnumber*4);
             if (!endpoint) {
                 /* Clear the stall.*/
-                spinal_udc_ep_status_mask(target_ep, ~USB_DEVICE_EP_STALL, 0);
+                spinal_udc_ep_unstall(udc, target_ep, 0);
             } else {
                 if (flag) {
-                    spinal_udc_ep_status_mask(target_ep, 0, USB_DEVICE_EP_STALL);
+                    spinal_udc_ep_stall(udc, target_ep, 0);
                 } else {
-                    spinal_udc_ep_status_mask(target_ep, ~(USB_DEVICE_EP_STALL | USB_DEVICE_EP_PHASE(1)), 0);
+                    spinal_udc_ep_unstall(udc, target_ep, 1);
                 }
             }
         }
         break;
     default:
-        spinal_udc_ep0_stall(udc);
+        spinal_udc_ep0_stall(udc, 1);
         return;
     }
 
@@ -410,7 +441,7 @@ static void spinal_udc_set_clear_feature(struct spinal_udc* udc){
         return;
 
     dev_err(udc->dev, "Can't respond to SET/CLEAR FEATURE\n");
-    spinal_udc_ep0_stall(udc);
+    spinal_udc_ep0_stall(udc, 1);
 }
 
 static void spinal_udc_ep0_status(struct spinal_udc* udc){
@@ -429,7 +460,7 @@ static void spinal_udc_ep0_status(struct spinal_udc* udc){
         return;
 
     dev_dbg(udc->dev, "%s error\n", __func__);
-    spinal_udc_ep0_stall(udc);
+    spinal_udc_ep0_stall(udc, 1);
 }
 
 static void spinal_udc_ep0_data_completion(struct usb_ep *_ep, struct usb_request *req){
@@ -498,7 +529,7 @@ static void spinal_udc_setup_irq(struct spinal_udc *udc){
     error = udc->driver->setup(&udc->gadget, &udc->setup);
     if (error < 0){
         dev_dbg(udc->dev, "%s driver unable to handle SETUP :( %d %x\n", __func__, error, (u32)udc->driver->setup);
-        spinal_udc_ep0_stall(udc);
+        spinal_udc_ep0_stall(udc, 1);
     }
     spin_lock(&udc->lock);
 
@@ -680,14 +711,14 @@ static int spinal_udc_pullup(struct usb_gadget *gadget, int is_on)
     return 0;
 }
 
-static void spinal_udc_ep_halt(struct spinal_udc_ep *ep){
-    writel(0x10 | ep->epnumber, ep->udc->addr + USB_DEVICE_HALT);
-    while(readl(ep->udc->addr + USB_DEVICE_HALT) & 0x20); //TODO
-}
-
-static void spinal_udc_ep_unhalt(struct spinal_udc_ep *ep){
-    writel(0, ep->udc->addr + USB_DEVICE_HALT);
-}
+//static void spinal_udc_ep_halt(struct spinal_udc_ep *ep){
+//    writel(0x10 | ep->epnumber, ep->udc->addr + USB_DEVICE_HALT);
+//    while(readl(ep->udc->addr + USB_DEVICE_HALT) & 0x20); //TODO
+//}
+//
+//static void spinal_udc_ep_unhalt(struct spinal_udc_ep *ep){
+//    writel(0, ep->udc->addr + USB_DEVICE_HALT);
+//}
 
 
 static int __spinal_udc_ep_enable(struct spinal_udc_ep *ep,
@@ -1021,7 +1052,7 @@ static void spinal_udc_ep_desc_refill(struct spinal_udc_ep *ep){
         offset = ((u32)req->usb_req.buf + req->commited_length) & 0x3;
         desc->offset = offset;
         desc->req_completion = left == length;
-        packet_end = length == left && !(ep->is_in && !req->usb_req.zero);
+        packet_end = length == left && ep->is_in && !(ep->is_in && !req->usb_req.zero) && !(ep->epnumber == 0 && req->commited_length + length >= udc->setup.wLength);
         writel((USB_DEVICE_CODE_NONE << 16) | (offset), desc->mapping + 0);
         writel(((length + offset) << 16), desc->mapping + 4);
         writel(  (ep->is_in ? USB_DEVICE_DESC_IN : USB_DEVICE_DESC_OUT)
@@ -1047,7 +1078,7 @@ static void spinal_udc_ep_desc_refill(struct spinal_udc_ep *ep){
 
 
 
-        dev_dbg(udc->dev, "%s commited %d %d %d %d left %d\n", __func__, ep->is_in, length, desc->req_completion, packet_end, req->usb_req.length - req->commited_length);
+        dev_dbg(udc->dev, "%s commited %d %d %d %d %d left %d z=%d s=%d\n", __func__,  ep->epnumber,  ep->is_in, length, desc->req_completion, packet_end, req->usb_req.length - req->commited_length, req->usb_req.zero , req->usb_req.short_not_ok);
     }
 }
 
@@ -1199,50 +1230,36 @@ static int spinal_udc_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 static int spinal_udc_ep_set_halt(struct usb_ep *_ep, int value)
 {
     struct spinal_udc_ep *ep = to_spinal_udc_ep(_ep);
-    struct spinal_udc *udc = ep->udc;
-    dev_dbg(udc->dev, "%s call, UNIMPLMENTED", __func__);
-//    struct xusb_ep *ep = to_xusb_ep(_ep);
-//    struct xusb_udc *udc;
-//    unsigned long flags;
-//    u32 epcfgreg;
+    struct spinal_udc *udc;
+    unsigned long flags;
 //
-//    if (!_ep || (!ep->desc && ep->epnumber)) {
-//        pr_debug("%s: bad ep or descriptor\n", __func__);
-//        return -EINVAL;
-//    }
-//    udc = ep->udc;
-//
-//    if (ep->is_in && (!list_empty(&ep->queue)) && value) {
-//        dev_dbg(udc->dev, "requests pending can't halt\n");
-//        return -EAGAIN;
-//    }
+    if (!_ep || (!ep->desc && ep->epnumber)) {
+        pr_debug("%s: bad ep or descriptor\n", __func__);
+        return -EINVAL;
+    }
+    udc = ep->udc;
+
+    dev_dbg(udc->dev, "%s call", __func__);
+
+    if (ep->is_in && (!list_empty(&ep->reqs)) && value) {
+        dev_dbg(udc->dev, "requests pending can't halt\n");
+        return -EAGAIN;
+    }
 //
 //    if (ep->buffer0ready || ep->buffer1ready) {
 //        dev_dbg(udc->dev, "HW buffers busy can't halt\n");
 //        return -EAGAIN;
 //    }
-//
-//    spin_lock_irqsave(&udc->lock, flags);
-//
-//    if (value) {
-//        /* Stall the device.*/
-//        epcfgreg = udc->read_fn(udc->addr + ep->offset);
-//        epcfgreg |= XUSB_EP_CFG_STALL_MASK;
-//        udc->write_fn(udc->addr, ep->offset, epcfgreg);
-//    } else {
-//        /* Unstall the device.*/
-//        epcfgreg = udc->read_fn(udc->addr + ep->offset);
-//        epcfgreg &= ~XUSB_EP_CFG_STALL_MASK;
-//        udc->write_fn(udc->addr, ep->offset, epcfgreg);
-//        if (ep->epnumber) {
-//            /* Reset the toggle bit.*/
-//            epcfgreg = udc->read_fn(ep->udc->addr + ep->offset);
-//            epcfgreg &= ~XUSB_EP_CFG_DATA_TOGGLE_MASK;
-//            udc->write_fn(udc->addr, ep->offset, epcfgreg);
-//        }
-//    }
-//
-//    spin_unlock_irqrestore(&udc->lock, flags);
+
+    spin_lock_irqsave(&udc->lock, flags);
+
+    if (value) {
+        spinal_udc_ep_stall(udc, ep, 0);
+    } else {
+        spinal_udc_ep_unstall(udc, ep, ep->epnumber);
+    }
+
+    spin_unlock_irqrestore(&udc->lock, flags);
     return 0;
 }
 
