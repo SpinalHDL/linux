@@ -270,13 +270,31 @@ static void spinal_udc_done(struct spinal_udc_ep *ep, struct spinal_udc_req *req
         status = req->usb_req.status;
 
     if (status && status != -ESHUTDOWN)
-        dev_dbg(udc->dev, "%s done %p, status %d\n", ep->ep_usb.name, req, status);
+        dev_dbg(udc->dev, "%s done %p, status %d\n",ep->ep_usb.name, req, status);
 
-    while (!list_empty(&req->descriptors)) {
-        struct spinal_udc_descriptor *desc;
-        desc = list_first_entry(&req->descriptors, struct spinal_udc_descriptor, req_node);
-        list_move_tail(&desc->udc_node, &udc->mp_small);
-        list_del(&desc->req_node);
+    if(!list_empty(&req->descriptors)){
+        dev_dbg(udc->dev, "%s descriptors were not empty ! UNTESTED\n", __func__);
+        spinal_udc_hard_halt(ep);
+        while (!list_empty(&req->descriptors)) {
+            struct spinal_udc_descriptor *desc, *entry;
+            u32 next,tmp;
+//
+            desc = list_first_entry(&req->descriptors, struct spinal_udc_descriptor, req_node);
+            entry = list_first_entry(&ep->descriptors, struct spinal_udc_descriptor, udc_node);
+            next = readl(desc->mapping + 4) & 0xFFF0;
+            if(entry == desc){ //On the hardware head
+                tmp = readl(udc->addr + ep->epnumber*4) & ~0xFFF0;
+                writel(tmp | next, udc->addr + ep->epnumber*4);
+            } else { //in hardware tail
+                entry = list_prev_entry(desc, udc_node);
+                tmp = readl(entry->mapping + 4) & ~0xFFF0;
+                writel(tmp | next, entry->mapping + 4);
+            }
+
+            list_move_tail(&desc->udc_node, &udc->mp_small);
+            list_del(&desc->req_node);
+        }
+        spinal_udc_hard_halt(ep);
     }
 
     if (req->usb_req.complete) {
@@ -889,7 +907,7 @@ static void spinal_udc_descriptor_push(struct spinal_udc *udc, struct spinal_udc
     if(!list_empty(&ep->descriptors)){
         struct spinal_udc_descriptor* last = list_last_entry(&ep->descriptors, struct spinal_udc_descriptor, udc_node);
         dev_dbg(udc->dev, "%s push tail\n", __func__);
-        writel(desc->address >> 4, last->mapping + 4);
+        writel(desc->address, last->mapping + 4);
     }
 
     status = readl(udc->addr + ep->epnumber*4);
@@ -952,23 +970,22 @@ err:
 static int spinal_udc_stop(struct usb_gadget *gadget)
 {
     struct spinal_udc *udc = to_udc(gadget);
-    dev_dbg(udc->dev, "%s call, UNIMPLMENTED", __func__);
-//    struct xusb_udc *udc = to_udc(gadget);
-//    unsigned long flags;
-//
-//    spin_lock_irqsave(&udc->lock, flags);
-//
-//    udc->gadget.speed = USB_SPEED_UNKNOWN;
-//    udc->driver = NULL;
-//
-//    /* Set device address and remote wakeup to 0 */
-//    udc->write_fn(udc->addr, XUSB_ADDRESS_OFFSET, 0);
-//    udc->remote_wkp = 0;
-//
-//    spinal_udc_stop_activity(udc);
-//
-//    spin_unlock_irqrestore(&udc->lock, flags);
-//
+    unsigned long flags;
+    dev_dbg(udc->dev, "%s call UNTESTED", __func__);
+
+    spin_lock_irqsave(&udc->lock, flags);
+
+    udc->gadget.speed = USB_SPEED_UNKNOWN;
+    udc->driver = NULL;
+
+    /* Set device address and remote wakeup to 0 */
+    writel(0, udc->addr + USB_DEVICE_ADDRESS);
+    udc->remote_wkp = 0;
+
+    spinal_udc_stop_activity(udc);
+
+    spin_unlock_irqrestore(&udc->lock, flags);
+
     return 0;
 }
 
@@ -1187,7 +1204,12 @@ static int spinal_udc_ep_queue(struct usb_ep *_ep, struct usb_request *_req,
     req->commited_once = 0;
 
     list_add_tail(&req->ep_node, &ep->reqs);
-
+//#ifdef DEBUG
+//    for(idx = 0;idx < req->usb_req.length;idx++){
+//        printk("%02x ",((u8*)req->usb_req.buf)[idx]);
+//    }
+//    printk("\n");
+//#endif
     spinal_udc_ep_desc_refill(ep);
 
     spin_unlock_irqrestore(&udc->lock, flags);
@@ -1204,25 +1226,23 @@ static int spinal_udc_ep_queue(struct usb_ep *_ep, struct usb_request *_req,
 static int spinal_udc_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 {
     struct spinal_udc_ep *ep = to_spinal_udc_ep(_ep);
+    struct spinal_udc_req *req = to_spinal_udc_req(_req);
     struct spinal_udc *udc = ep->udc;
-    dev_dbg(udc->dev, "%s call, UNIMPLMENTED", __func__);
-//    struct xusb_ep *ep  = to_xusb_ep(_ep);
-//    struct xusb_req *req    = to_xusb_req(_req);
-//    struct xusb_udc *udc    = ep->udc;
-//    unsigned long flags;
-//
-//    spin_lock_irqsave(&udc->lock, flags);
-//    /* Make sure it's actually queued on this endpoint */
-//    list_for_each_entry(req, &ep->queue, queue) {
-//        if (&req->usb_req == _req)
-//            break;
-//    }
-//    if (&req->usb_req != _req) {
-//        spin_unlock_irqrestore(&udc->lock, flags);
-//        return -EINVAL;
-//    }
-//    spinal_udc_done(ep, req, -ECONNRESET);
-//    spin_unlock_irqrestore(&udc->lock, flags);
+    unsigned long flags;
+    dev_dbg(udc->dev, "%s call, UNTESTED", __func__);
+
+    spin_lock_irqsave(&udc->lock, flags);
+    /* Make sure it's actually queued on this endpoint */
+    list_for_each_entry(req, &ep->reqs, ep_node) {
+        if (&req->usb_req == _req)
+            break;
+    }
+    if (&req->usb_req != _req) {
+        spin_unlock_irqrestore(&udc->lock, flags);
+        return -EINVAL;
+    }
+    spinal_udc_done(ep, req, -ECONNRESET);
+    spin_unlock_irqrestore(&udc->lock, flags);
 
     return 0;
 }
