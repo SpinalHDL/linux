@@ -1,4 +1,4 @@
-#define DEBUG
+//#define DEBUG
 
 // cd $SAXON_ROOT/buildroot-build && make linux-rebuild && HOST_DIR=$SAXON_ROOT/buildroot-build/host BINARIES_DIR=$SAXON_ROOT/buildroot-build/images TARGET_DIR=$SAXON_ROOT/buildroot-build/target $SAXON_ROOT/buildroot-spinal-saxon/boards/common/post_build.sh && saxon_fpga_load
 // https://aniembedded.com/2011/11/15/linux-usb-tests-using-gadget-zero-driver/
@@ -7,6 +7,11 @@
 /*
 echo "3" > /proc/sys/kernel/printk
 ./gadget.sh
+
+
+sudo systemctl stop ModemManager.service
+sudo systemctl disable ModemManager.service
+
  */
 
 #include <linux/delay.h>
@@ -585,7 +590,7 @@ static void spinal_udc_reset_irq(struct spinal_udc *udc){
     /* Set device address and remote wakeup to 0 */
     writel(0, udc->addr + USB_DEVICE_ADDRESS);
     udc->remote_wkp = 0;
-    udc->usb_state = 0;
+    udc->usb_state = USB_STATE_DEFAULT;
 
     /* Enable the suspend, resume and disconnect */
 //    intrreg = udc->read_fn(udc->addr + XUSB_IER_OFFSET);
@@ -604,7 +609,7 @@ static void spinal_udc_reset_irq(struct spinal_udc *udc){
 static void spinal_udc_suspend_irq(struct spinal_udc *udc){
     dev_dbg(udc->dev, "%s\n", __func__);
 
-    if(udc->usb_state != USB_STATE_SUSPENDED){
+    if(udc->usb_state != USB_STATE_SUSPENDED && udc->usb_state != USB_STATE_NOTATTACHED){
         udc->usb_state = USB_STATE_SUSPENDED;
         if (udc->driver && udc->driver->suspend) {
             spin_unlock(&udc->lock);
@@ -629,7 +634,7 @@ static void spinal_udc_resume_irq(struct spinal_udc *udc){
 
 static void spinal_udc_disconnect_irq(struct spinal_udc *udc){
     dev_dbg(udc->dev, "%s\n", __func__);
-    udc->usb_state = 0;
+    udc->usb_state = USB_STATE_NOTATTACHED;
 
     if (udc->driver && udc->driver->disconnect) {
         spin_unlock(&udc->lock);
@@ -885,7 +890,7 @@ static int __spinal_udc_ep_enable(struct spinal_udc_ep *ep,
     /* Enable the End point.*/
     writel(USB_DEVICE_EP_ENABLE | USB_DEVICE_EP_PHASE(0) | USB_DEVICE_EP_MAX_PACKET_SIZE(maxpacket), udc->addr + ep->epnumber*4);
 
-    dev_dbg(udc->dev, "%s done\n", __func__);
+    dev_dbg(udc->dev, "%s done %d\n", __func__, ep->epnumber);
 //    epcfg = udc->read_fn(udc->addr + ep->offset);
 //    epcfg |= XUSB_EP_CFG_VALID_MASK;
 //    udc->write_fn(udc->addr, ep->offset, epcfg);
@@ -1569,7 +1574,7 @@ static int spinal_udc_probe(struct platform_device *pdev)
     spinal_udc_req_init(&udc->ep0_req, &udc->ep[0]);
     udc->ep0_req.usb_req.buf = udc->ep0_req_data;
     udc->ep0_state = 0;
-    udc->usb_state = 0;
+    udc->usb_state = USB_STATE_NOTATTACHED;
 
     /* Setup gadget structure */
     udc->gadget.ops = &spinal_udc_ops;
