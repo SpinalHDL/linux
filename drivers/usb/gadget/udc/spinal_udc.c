@@ -93,6 +93,7 @@ static const char ep0name[] = "ep0";
 #define DESC_LARGE_SIZE (512+4)
 
 #define DESC_LARGE_COUNT 4
+#define EP_DESC_MAX 4
 
 #define SPINAL_UDC_MAX_ENDPOINTS 16
 
@@ -147,6 +148,7 @@ struct spinal_udc_descriptor {
     s32 address;
     u16 length; //Number of data bytes allocated for the descriptor (not related to spinal_udc_req management)
     u16 offset;
+    u16 length_deployed;
     void __iomem *mapping;
     bool req_completion;
     struct list_head *free;
@@ -177,6 +179,7 @@ struct spinal_udc_ep {
     u32 pending_reqs_done;
 
     struct list_head descriptors;
+    u32 descriptor_count;
 };
 
 
@@ -219,7 +222,7 @@ static const struct usb_endpoint_descriptor config_bulk_out_desc = {
 static int __spinal_udc_ep0_queue(struct spinal_udc_ep *ep0, struct spinal_udc_req *req);
 static void spinal_udc_ep_desc_refill(struct spinal_udc_ep *ep);
 static void spinal_udc_nuke(struct spinal_udc_ep *ep, int status);
-
+static void spinal_udc_ep_link_head(struct spinal_udc_ep *ep);
 
 
 static void spinal_udc_hard_halt(struct spinal_udc_ep *ep){
@@ -373,6 +376,7 @@ static void spinal_udc_done(struct spinal_udc_ep *ep, struct spinal_udc_req *req
 
             list_move_tail(&desc->udc_node, desc->free);
             list_del(&desc->req_node);
+            ep->descriptor_count -= 1;
         }
         spinal_udc_hard_halt(ep);
     }
@@ -703,8 +707,8 @@ static void spinal_udc_disconnect_irq(struct spinal_udc *udc){
 
 
 static void spinal_udc_ep_irq(struct spinal_udc_ep *ep){
-//    struct spinal_udc *udc = ep->udc;
-    //dev_dbg(udc->dev, "%s\n", __func__);
+    struct spinal_udc *udc = ep->udc;
+    dev_dbg(udc->dev, "%s\n", __func__);
     while(1){
         struct spinal_udc_req *req;
         struct spinal_udc_descriptor *desc;
@@ -730,6 +734,7 @@ static void spinal_udc_ep_irq(struct spinal_udc_ep *ep){
             req->usb_req.actual += length;
             list_move_tail(&desc->udc_node, desc->free);
             list_del(&desc->req_node);
+            ep->descriptor_count -= 1;
 
             if(desc->req_completion || length != desc->length){
                 req->usb_req.status = 0;
@@ -772,6 +777,7 @@ static irqreturn_t spinal_udc_irq(int irq, void *_udc)
         if(id < 16){
             spinal_udc_ep_irq(udc->ep + id);
             spinal_udc_ep_desc_refill(udc->ep + id);
+            spinal_udc_ep_link_head(udc->ep + id);
         } else if(id == USB_DEVICE_IRQ_RESET) {
             spinal_udc_reset_irq(udc);
         } else if(id == USB_DEVICE_IRQ_SETUP) {
@@ -1055,23 +1061,53 @@ static int spinal_udc_ep_disable(struct usb_ep *_ep)
 
 
 static void spinal_udc_descriptor_push(struct spinal_udc *udc, struct spinal_udc_ep *ep, struct spinal_udc_descriptor* desc){
-    u32 status;
+
 //    dev_dbg(udc->dev, "%s %d\n", __func__, ep->epnumber);
     if(!list_empty(&ep->descriptors)){
         struct spinal_udc_descriptor* last = list_last_entry(&ep->descriptors, struct spinal_udc_descriptor, udc_node);
         //dev_dbg(udc->dev, "%s push tail\n", __func__);
-        writel(desc->address, last->mapping + 4);
-    }
-
-    status = readl(udc->addr + ep->epnumber*4);
-    if((status & 0xFFF0) == 0) {
-        //dev_dbg(udc->dev, "%s push head!\n", __func__);
-        status = status & ~0xFFF0;
-        status |= desc->address;
-        writel(status, udc->addr + ep->epnumber*4);
+        writel(desc->address | (last->length_deployed << 16), last->mapping + 4);
+    } else {
+        u32 status = readl(udc->addr + ep->epnumber*4);
+        if((status & 0xFFF0) == 0) {
+            //dev_dbg(udc->dev, "%s push head!\n", __func__);
+            status = status & ~0xFFF0;
+            status |= desc->address;
+            writel(status, udc->addr + ep->epnumber*4);
+        }
     }
 
     list_move_tail(&desc->udc_node, &ep->descriptors);
+    ep->descriptor_count += 1;
+//    printk("D%d %d", ep->epnumber, ep->descriptor_count);
+}
+
+static void spinal_udc_ep_link_head(struct spinal_udc_ep *ep){
+    struct spinal_udc *udc = ep->udc;
+    struct spinal_udc_descriptor* head;
+    u32 status_ep, status_desc;
+
+    dev_dbg(udc->dev, "%s\n", __func__);
+
+    if(list_empty(&ep->descriptors)) return;
+    head = list_first_entry(&ep->descriptors, struct spinal_udc_descriptor, udc_node);
+
+    status_ep = readl(udc->addr + ep->epnumber*4);
+    if((status_ep & 0xFFF0) != 0) {
+        dev_dbg(udc->dev, "%s already linked\n", __func__);
+        return;
+    }
+
+    status_desc = readl(head->mapping);
+    if((status_desc & 0xF0000) != 0xF0000) {
+        dev_dbg(udc->dev, "%s completion pending\n", __func__);
+        return;
+    }
+
+    //dev_dbg(udc->dev, "%s push head!\n", __func__);
+    status_ep = status_ep & ~0xFFF0;
+    status_ep |= head->address;
+    writel(status_ep, udc->addr + ep->epnumber*4);
 }
 
 static int spinal_udc_start(struct usb_gadget *gadget,
@@ -1196,7 +1232,8 @@ static void spinal_udc_ep_free_request(struct usb_ep *_ep, struct usb_request *_
 //TODO WARNING, pid out shorter than max length will not discard subsequant descriptors.
 static void spinal_udc_ep_desc_refill(struct spinal_udc_ep *ep){
     struct spinal_udc *udc = ep->udc;
-    if (!list_empty(&ep->reqs)) {
+
+    while(ep->descriptor_count != EP_DESC_MAX){
         u32 length, offset;
         u32 left;
         s32 word, word_count;
@@ -1207,10 +1244,11 @@ static void spinal_udc_ep_desc_refill(struct spinal_udc_ep *ep){
         struct spinal_udc_descriptor *desc;
         dev_dbg(udc->dev, "%s", __func__);
 
+        if (list_empty(&ep->reqs)) return;
         req = list_first_entry(&ep->reqs, struct spinal_udc_req, ep_node);
         left = req->usb_req.length - req->commited_length;
         if(left == 0 && req->commited_once) return;
-        if (!list_empty(&ep->descriptors)) return;
+//        if (!list_empty(&ep->descriptors)) return;
 
         if(left >= DESC_LARGE_SIZE && !list_empty(&udc->dp_large)){
             desc = list_first_entry(&udc->dp_large, struct spinal_udc_descriptor, udc_node);
@@ -1226,6 +1264,7 @@ static void spinal_udc_ep_desc_refill(struct spinal_udc_ep *ep){
         offset = ((u32)req->usb_req.buf + req->commited_length) & 0x3;
         desc->offset = offset;
         desc->req_completion = left == length;
+        desc->length_deployed = length;
         packet_end = length == left && ep->is_in && !(ep->is_in && !req->usb_req.zero) && !(ep->epnumber == 0 && req->commited_length + length >= udc->setup.wLength);
         writel((USB_DEVICE_CODE_NONE << 16) | (offset), desc->mapping + 0);
         writel(((length + offset) << 16), desc->mapping + 4);
@@ -1405,6 +1444,7 @@ static int spinal_udc_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
         return -EINVAL;
     }
     spinal_udc_done(ep, req, -ECONNRESET);
+    spinal_udc_ep_desc_refill(ep);
     spin_unlock_irqrestore(&udc->lock, flags);
 
     return 0;
@@ -1522,9 +1562,9 @@ static int spinal_udc_eps_init(struct spinal_udc *udc)
         ep->pending_reqs_done = 0;
         spinal_udc_epconfig(ep, udc);
 
-        /* Initialize one queue per endpoint */
         INIT_LIST_HEAD(&ep->reqs);
         INIT_LIST_HEAD(&ep->descriptors);
+        ep->descriptor_count = 0;
     }
     return 0;
 }
