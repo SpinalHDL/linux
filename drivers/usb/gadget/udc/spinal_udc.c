@@ -12,6 +12,58 @@ echo "3" > /proc/sys/kernel/printk
 sudo systemctl stop ModemManager.service
 sudo systemctl disable ModemManager.service
 
+
+
+
+
+#!/bin/sh
+
+
+export CONFIGFS_HOME="/root/usb"
+export GADGET_BASE_DIR="${CONFIGFS_HOME}/usb_gadget/g1"
+export DEV_ETH_ADDR="aa:bb:cc:dd:ee:f1"
+export HOST_ETH_ADDR="aa:bb:cc:dd:ee:f2"
+#export USBDISK="/usbdisk.img"
+export USBDISK="/dev/sda2"
+
+# Create directory structure
+mkdir -p "${CONFIGFS_HOME}/usb_gadget"
+mount none $CONFIGFS_HOME -t configfs
+mkdir -p "${GADGET_BASE_DIR}"
+cd "${GADGET_BASE_DIR}"
+mkdir -p configs/c.1/strings/0x409
+mkdir -p strings/0x409
+
+# Serial device
+###
+mkdir functions/acm.usb0
+ln -s functions/acm.usb0 configs/c.1/
+###
+
+# Ethernet device
+###
+mkdir functions/ecm.usb0
+echo "${DEV_ETH_ADDR}" > functions/ecm.usb0/dev_addr
+echo "${HOST_ETH_ADDR}" > functions/ecm.usb0/host_addr
+ln -s functions/ecm.usb0 configs/c.1/
+###
+
+# Mass Storage device
+###
+mkdir functions/mass_storage.usb0
+echo 1 > functions/mass_storage.usb0/stall
+echo 0 > functions/mass_storage.usb0/lun.0/cdrom
+echo 0 > functions/mass_storage.usb0/lun.0/ro
+echo 0 > functions/mass_storage.usb0/lun.0/nofua
+echo "${USBDISK}" > functions/mass_storage.usb0/lun.0/file
+ln -s functions/mass_storage.usb0 configs/c.1/
+###
+
+# Activate gadgets
+echo 100b0000.udc > UDC
+
+
+
  */
 
 #include <linux/delay.h>
@@ -38,6 +90,9 @@ static const char ep0name[] = "ep0";
 #define EPNAME_SIZE     4
 #define DESC_HEADER_SIZE 12
 #define DESC_SMALL_SIZE (64+4)
+#define DESC_LARGE_SIZE (512+4)
+
+#define DESC_LARGE_COUNT 4
 
 #define SPINAL_UDC_MAX_ENDPOINTS 16
 
@@ -94,7 +149,7 @@ struct spinal_udc_descriptor {
     u16 offset;
     void __iomem *mapping;
     bool req_completion;
-
+    struct list_head *free;
 };
 
 
@@ -138,7 +193,8 @@ struct spinal_udc {
     s32 ep_count;
 
 
-    struct list_head mp_small;
+    struct list_head dp_small;
+    struct list_head dp_large;
 
     struct spinal_udc_descriptor ep0_setup;
     struct spinal_udc_req ep0_req;
@@ -183,11 +239,11 @@ static void spinal_udc_ep_status_mask(struct spinal_udc_ep *ep, u32 and, u32 or)
     spinal_udc_hard_unhalt(ep);
 }
 
-static void spinal_udc_ep_status_mask_no_halt(struct spinal_udc_ep *ep, u32 and, u32 or){
-    u32 ep_status;
-    ep_status = readl(ep->udc->addr + ep->epnumber * 4);
-    writel((ep_status & and) | or, ep->udc->addr + ep->epnumber * 4);
-}
+//static void spinal_udc_ep_status_mask_no_halt(struct spinal_udc_ep *ep, u32 and, u32 or){
+//    u32 ep_status;
+//    ep_status = readl(ep->udc->addr + ep->epnumber * 4);
+//    writel((ep_status & and) | or, ep->udc->addr + ep->epnumber * 4);
+//}
 
 
 
@@ -315,7 +371,7 @@ static void spinal_udc_done(struct spinal_udc_ep *ep, struct spinal_udc_req *req
                 writel(tmp | next, entry->mapping + 4);
             }
 
-            list_move_tail(&desc->udc_node, &udc->mp_small);
+            list_move_tail(&desc->udc_node, desc->free);
             list_del(&desc->req_node);
         }
         spinal_udc_hard_halt(ep);
@@ -647,7 +703,7 @@ static void spinal_udc_disconnect_irq(struct spinal_udc *udc){
 
 
 static void spinal_udc_ep_irq(struct spinal_udc_ep *ep){
-    struct spinal_udc *udc = ep->udc;
+//    struct spinal_udc *udc = ep->udc;
     //dev_dbg(udc->dev, "%s\n", __func__);
     while(1){
         struct spinal_udc_req *req;
@@ -672,10 +728,10 @@ static void spinal_udc_ep_irq(struct spinal_udc_ep *ep){
             }
 
             req->usb_req.actual += length;
-            list_move_tail(&desc->udc_node, &udc->mp_small);
+            list_move_tail(&desc->udc_node, desc->free);
             list_del(&desc->req_node);
 
-            if(desc->req_completion || length != ep->ep_usb.maxpacket){
+            if(desc->req_completion || length != desc->length){
                 req->usb_req.status = 0;
                 spinal_udc_done(ep, req, 0);
                 break;
@@ -1149,18 +1205,22 @@ static void spinal_udc_ep_desc_refill(struct spinal_udc_ep *ep){
         void __iomem *dst;
         struct spinal_udc_req *req;
         struct spinal_udc_descriptor *desc;
-        //dev_dbg(udc->dev, "%s", __func__);
+        dev_dbg(udc->dev, "%s", __func__);
 
         req = list_first_entry(&ep->reqs, struct spinal_udc_req, ep_node);
         left = req->usb_req.length - req->commited_length;
         if(left == 0 && req->commited_once) return;
         if (!list_empty(&ep->descriptors)) return;
 
-        if(list_empty(&udc->mp_small)){
+        if(left >= DESC_LARGE_SIZE && !list_empty(&udc->dp_large)){
+            desc = list_first_entry(&udc->dp_large, struct spinal_udc_descriptor, udc_node);
+//            printk("L %d %d\n", ep->epnumber, req->usb_req.length);
+        } else if(!list_empty(&udc->dp_small)){
+            desc = list_first_entry(&udc->dp_small, struct spinal_udc_descriptor, udc_node);
+        } else {
             dev_dbg(udc->dev, "%s EMPTY !!!!", __func__);
             while(1); //TODO
         }
-        desc = list_first_entry(&udc->mp_small, struct spinal_udc_descriptor, udc_node);
 
         length = min_t(u32, desc->length, left);
         offset = ((u32)req->usb_req.buf + req->commited_length) & 0x3;
@@ -1192,7 +1252,7 @@ static void spinal_udc_ep_desc_refill(struct spinal_udc_ep *ep){
 
 
 
-        //dev_dbg(udc->dev, "%s commited %d %d %d %d %d left %d z=%d s=%d\n", __func__,  ep->epnumber,  ep->is_in, length, desc->req_completion, packet_end, req->usb_req.length - req->commited_length, req->usb_req.zero , req->usb_req.short_not_ok);
+        dev_dbg(udc->dev, "%s commited %d %d %d %d %d left %d z=%d s=%d\n", __func__,  ep->epnumber,  ep->is_in, length, desc->req_completion, packet_end, req->usb_req.length - req->commited_length, req->usb_req.zero , req->usb_req.short_not_ok);
     }
 }
 
@@ -1253,7 +1313,7 @@ static int spinal_udc_ep0_queue(struct usb_ep *_ep, struct usb_request *_req,
     struct spinal_udc *udc    = ep0->udc;
     unsigned long flags;
     int ret;
-    dev_dbg(udc->dev, "driver queue on EP0", __func__);
+    dev_dbg(udc->dev, "%s driver queue on EP0", __func__);
     spin_lock_irqsave(&udc->lock, flags);
     ret = __spinal_udc_ep0_queue(ep0, req);
     spin_unlock_irqrestore(&udc->lock, flags);
@@ -1488,9 +1548,33 @@ static int spinal_udc_ram_init(struct spinal_udc *udc)
     left   -= DESC_HEADER_SIZE + 8; //TODO
     offset += DESC_HEADER_SIZE + 8;
 
-    INIT_LIST_HEAD(&udc->mp_small);
+    INIT_LIST_HEAD(&udc->dp_large);
+    INIT_LIST_HEAD(&udc->dp_small);
+
+    for(tmp = 0;tmp < DESC_LARGE_COUNT;tmp++){
+        struct spinal_udc_descriptor *desc;
+        desc = devm_kzalloc(udc->dev, sizeof(*desc), GFP_KERNEL);
+        if(!desc)
+            return -ENOMEM;
+
+        //Align
+        tmp = (0x10 - (offset & 0xF)) & 0xF;
+        left -= tmp;
+        offset += tmp;
+
+        desc->address = offset;
+        desc->mapping = udc->addr + offset;
+        desc->length  = DESC_LARGE_SIZE - 4;
+        desc->free = &udc->dp_large;
+        left -= DESC_HEADER_SIZE + DESC_LARGE_SIZE;
+        offset += DESC_HEADER_SIZE + DESC_LARGE_SIZE;
+        list_add_tail(&desc->udc_node, &udc->dp_large);
+    }
 
 
+    if(left < 512){
+        dev_dbg(udc->dev, "Not enough peripheral ram :(\n");
+    }
 
     while(left >= DESC_HEADER_SIZE + DESC_SMALL_SIZE) {
         struct spinal_udc_descriptor *desc;
@@ -1506,9 +1590,10 @@ static int spinal_udc_ram_init(struct spinal_udc *udc)
         desc->address = offset;
         desc->mapping = udc->addr + offset;
         desc->length  = DESC_SMALL_SIZE - 4;
+        desc->free = &udc->dp_small;
         left -= DESC_HEADER_SIZE + DESC_SMALL_SIZE;
         offset += DESC_HEADER_SIZE + DESC_SMALL_SIZE;
-        list_add_tail(&desc->udc_node, &udc->mp_small);
+        list_add_tail(&desc->udc_node, &udc->dp_small);
     }
     return 0;
 }
