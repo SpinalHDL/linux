@@ -576,7 +576,7 @@ static void spinal_udc_ep0_status_completion(struct usb_ep *_ep, struct usb_requ
 
     usb_data_req = &udc->ep0_data_req->usb_req;
 
-    if (usb_data_req->complete) {
+    if (usb_data_req->complete && usb_data_req->complete != usb_data_req->complete) {
         dev_dbg(udc->dev, "%s complete call\n", __func__);
         usb_data_req->complete(_ep, usb_data_req);
     }
@@ -626,6 +626,7 @@ static void spinal_udc_setup_irq(struct spinal_udc *udc){
     memcpy(&udc->setup, payload, 8);
     spinal_udc_nuke(ep0, -ECONNRESET);
     udc->ep0_state = EP0_STATE_DATA;
+    udc->ep0_data_req = NULL;
 
     if (udc->setup.bRequestType & USB_DIR_IN) {
         /* Execute the get command.*/
