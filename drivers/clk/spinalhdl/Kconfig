@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0
+
+menuconfig CLK_SPINAL
+	bool "SpinalHDL clock driver support"
+	help
+	  Clock drivers for SpinalHDL Linux-capable SoCs.
+
+if CLK_SPINAL
+
+config CLK_SPINAL_MMCME2
+	bool "MMCME2 driver for Spinal's SoC"
+	help
+	  Enable support of Xilinx MMCME2 pll reconfiguration
+
+endif
