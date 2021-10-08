@@ -2209,6 +2209,17 @@ config FB_SIMPLE
 	  Configuration re: surface address, size, and format must be provided
 	  through device tree, or plain old platform data.
 
+
+config FB_SPINAL
+	bool "SpinalHDL framebuffer support"
+	depends on (FB = y)
+	select FB_CFB_FILLRECT
+	select FB_CFB_COPYAREA
+	select FB_CFB_IMAGEBLIT
+	help
+	  Say Y if you want support for the SpinalHDL frame-buffer.
+
+
 config FB_SSD1307
 	tristate "Solomon SSD1307 framebuffer support"
 	depends on FB && I2C
