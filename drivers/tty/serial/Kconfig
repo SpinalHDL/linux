@@ -1561,6 +1561,29 @@ config SERIAL_LITEUART_CONSOLE
 	  and warnings and which allows logins in single user mode).
 	  Otherwise, say 'N'.
 
+config SERIAL_SPINAL_LIB
+	tristate "SpinalHDL UART IP support"
+	select SERIAL_CORE
+	help
+	  This driver supports the SpinalHDL  UART port.
+
+config SERIAL_SPINAL_LIB_BAUDRATE
+	int "Default baudrate for SpinalHDL UART ports"
+	depends on SERIAL_SPINAL_LIB
+	default 115200
+	help
+	  This setting lets you define what the default baudrate is for the
+	  spinal lib UART ports. The usual default varies from board to board,
+	  and this setting is a way of catering for that.
+
+config SERIAL_SPINAL_LIB_CONSOLE
+	bool "SpinalHDL UART console support"
+	depends on SERIAL_SPINAL_LIB=y
+	select SERIAL_CORE_CONSOLE
+	select SERIAL_EARLYCON
+	help
+	  Enable a spinal lib UART port to be the system console.
+
 endmenu
 
 config SERIAL_MCTRL_GPIO

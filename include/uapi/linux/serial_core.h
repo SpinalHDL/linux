@@ -274,4 +274,7 @@
 /* Freescale LINFlexD UART */
 #define PORT_LINFLEXUART	122
 
+/* SpinalHDL UART */
+#define PORT_SPINALHDL_UART	123
+
 #endif /* _UAPILINUX_SERIAL_CORE_H */
