@@ -548,6 +548,13 @@ config PLX_DMA
 	  These are exposed via extra functions on the switch's
 	  upstream port. Each function exposes one DMA channel.
 
+config SPINAL_LIB_DMASG
+	tristate "SpinalHDL lib DMASG"
+	select DMA_ENGINE
+	help
+	  Enable support for SpinalHDL lib DMASG controller.
+
+
 config STE_DMA40
 	bool "ST-Ericsson DMA40 support"
 	depends on ARCH_U8500
