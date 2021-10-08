@@ -1,0 +1,1 @@
+obj-$(CONFIG_SPINAL_LIB_MAC) += spinalhdl_mac.o
