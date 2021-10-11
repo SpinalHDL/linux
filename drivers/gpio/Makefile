@@ -137,6 +137,7 @@ obj-$(CONFIG_GPIO_SIOX)			+= gpio-siox.o
 obj-$(CONFIG_GPIO_SL28CPLD)		+= gpio-sl28cpld.o
 obj-$(CONFIG_GPIO_SODAVILLE)		+= gpio-sodaville.o
 obj-$(CONFIG_GPIO_SPEAR_SPICS)		+= gpio-spear-spics.o
+obj-$(CONFIG_GPIO_SPINAL_LIB)		+= gpio-spinalhdl.o
 obj-$(CONFIG_GPIO_SPRD)			+= gpio-sprd.o
 obj-$(CONFIG_GPIO_STA2X11)		+= gpio-sta2x11.o
 obj-$(CONFIG_GPIO_STMPE)		+= gpio-stmpe.o
