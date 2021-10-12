@@ -576,7 +576,7 @@ static void spinal_udc_ep0_status_completion(struct usb_ep *_ep, struct usb_requ
 
     usb_data_req = &udc->ep0_data_req->usb_req;
 
-    if (usb_data_req->complete && usb_data_req->complete != usb_data_req->complete) {
+    if (usb_data_req->complete && usb_data_req->complete != spinal_udc_ep0_status_completion) {
         dev_dbg(udc->dev, "%s complete call\n", __func__);
         usb_data_req->complete(_ep, usb_data_req);
     }
