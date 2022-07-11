@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0
+config BLK_SB
+	tristate "simple block device"
+	help
+	  very simple block device
+
+
