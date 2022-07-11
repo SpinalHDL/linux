@@ -25,7 +25,7 @@
 
 // constants - instead defines
 static const char* _sblkdev_name = "sblkdev";
-static const size_t _sblkdev_buffer_size = 16 * PAGE_SIZE;
+static const size_t _sblkdev_buffer_size = 1024*1024/2 * PAGE_SIZE;
 
 // types
 typedef struct sblkdev_cmd_s
@@ -56,7 +56,9 @@ static sblkdev_device_t* _sblkdev_device = NULL;
 static int sblkdev_allocate_buffer(sblkdev_device_t* dev)
 {
     dev->capacity = _sblkdev_buffer_size >> SECTOR_SHIFT;
-    dev->data = kmalloc(dev->capacity << SECTOR_SHIFT, GFP_KERNEL); //
+//    dev->data = kmalloc(dev->capacity << SECTOR_SHIFT, GFP_KERNEL); //
+    dev->data = memremap(0xC0000000, dev->capacity << SECTOR_SHIFT, MEMREMAP_WB);
+
     if (dev->data == NULL) {
         printk(KERN_WARNING "sblkdev: vmalloc failure.\n");
         return -ENOMEM;
@@ -114,7 +116,7 @@ static int do_simple_request(struct request *rq, unsigned int *nr_bytes)
     loff_t pos = blk_rq_pos(rq) << SECTOR_SHIFT;
     loff_t dev_size = (loff_t)(dev->capacity << SECTOR_SHIFT);
 
-    printk(KERN_WARNING "sblkdev: request start from sector %ld \n", blk_rq_pos(rq));
+    //printk(KERN_WARNING "sblkdev: request start from sector %ld \n", blk_rq_pos(rq));
     
     rq_for_each_segment(bvec, rq, iter)
     {
@@ -149,7 +151,7 @@ static blk_status_t _queue_rq(struct blk_mq_hw_ctx *hctx, const struct blk_mq_qu
     if (do_simple_request(rq, &nr_bytes) != SUCCESS)
         status = BLK_STS_IOERR;
 
-    printk(KERN_WARNING "sblkdev: request process %d bytes\n", nr_bytes);
+    //printk(KERN_WARNING "sblkdev: request process %d bytes\n", nr_bytes);
 
 #if 0 //simply and can be called from proprietary module 
     blk_mq_end_request(rq, status);
@@ -176,7 +178,7 @@ static int _open(struct block_device *bdev, fmode_t mode)
 
     atomic_inc(&dev->open_counter);
 
-    printk(KERN_WARNING "sblkdev: device was opened\n");
+    //printk(KERN_WARNING "sblkdev: device was opened\n");
 
     return SUCCESS;
 }
@@ -186,7 +188,7 @@ static void _release(struct gendisk *disk, fmode_t mode)
     if (dev) {
         atomic_dec(&dev->open_counter);
 
-        printk(KERN_WARNING "sblkdev: device was closed\n");
+        //printk(KERN_WARNING "sblkdev: device was closed\n");
     }
     else
         printk(KERN_WARNING "sblkdev: invalid disk private_data\n");
