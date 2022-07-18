@@ -8,8 +8,10 @@
 #include <linux/blk_types.h>
 #include <linux/blkdev.h>
 #include <linux/blk-mq.h>
+#include <linux/platform_device.h>
 #include <uapi/linux/hdreg.h> //for struct hd_geometry
 #include <uapi/linux/cdrom.h> //for CDROM_GET_CAPABILITY
+#include <linux/of.h>
 
 #ifndef SUCCESS
 #define SUCCESS 0
@@ -23,15 +25,26 @@
 #define SECTOR_SIZE (1 << SECTOR_SHIFT)
 #endif
 
+#define REG_STATUS 0x0
+#define REG_LOW 0x4
+#define REG_HIGH 0x8
+#define REG_SIZE 0xC
+#define REG_DATA 0x10
+#define REG_CAPACITY_LOW 0x20
+#define REG_CAPACITY_HIGH 0x24
+
+
 // constants - instead defines
 static const char* _sblkdev_name = "sblkdev";
-static const size_t _sblkdev_buffer_size = 1024*1024/2 * PAGE_SIZE;
+//static const size_t _sblkdev_buffer_size = 1024*1024/2 * PAGE_SIZE;
 
 // types
 typedef struct sblkdev_cmd_s
 {
     //nothing
 } sblkdev_cmd_t;
+
+enum sblkdev_mode{MEM = 0, IO = 1};
 
 // The internal representation of our device
 typedef struct sblkdev_device_s
@@ -44,25 +57,42 @@ typedef struct sblkdev_device_s
     struct request_queue *queue;	// For mutual exclusion
 
     struct gendisk *disk;		// The gendisk structure
+    enum sblkdev_mode mode;
 } sblkdev_device_t;
 
 // global variables 
 
 static int _sblkdev_major = 0;
-static sblkdev_device_t* _sblkdev_device = NULL;
+//static sblkdev_device_t* _sblkdev_device = NULL;
 
 
 // functions
-static int sblkdev_allocate_buffer(sblkdev_device_t* dev)
+static int sblkdev_allocate_buffer(sblkdev_device_t* dev, struct platform_device * pdev)
 {
-    dev->capacity = _sblkdev_buffer_size >> SECTOR_SHIFT;
+    struct resource *res;
 //    dev->data = kmalloc(dev->capacity << SECTOR_SHIFT, GFP_KERNEL); //
-    dev->data = memremap(0xC0000000, dev->capacity << SECTOR_SHIFT, MEMREMAP_WB);
+    //dev->data = memremap(0xC0000000, dev->capacity << SECTOR_SHIFT, MEMREMAP_WB);
+    res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+    dev->data = devm_ioremap_resource(&pdev->dev, res);
 
     if (dev->data == NULL) {
         printk(KERN_WARNING "sblkdev: vmalloc failure.\n");
         return -ENOMEM;
     }
+
+    printk(KERN_WARNING "sblkdev: [0x%llx - 0x%llx]\n", res->start, res->end);
+
+
+    switch(dev->mode){
+    case MEM:
+        dev->capacity = (res->end+1 - res->start) >> SECTOR_SHIFT;
+        break;
+    case IO:
+        dev->capacity = (readl(dev->data + REG_CAPACITY_LOW) + (((u64)readl(dev->data + REG_CAPACITY_HIGH)) << 32)) >> SECTOR_SHIFT;
+        break;
+    }
+
+    printk(KERN_WARNING "sblkdev: Capacity %lld MB\n", dev->capacity >> 20-SECTOR_SHIFT);
 
     return SUCCESS;
 }
@@ -77,9 +107,9 @@ static void sblkdev_free_buffer(sblkdev_device_t* dev)
     }
 }
 
-static void sblkdev_remove_device(void)
+static void sblkdev_remove_device(struct platform_device * pdev)
 {
-    sblkdev_device_t* dev = _sblkdev_device;
+    sblkdev_device_t* dev = platform_get_drvdata(pdev);
     if (dev == NULL)
         return;
 
@@ -102,16 +132,17 @@ static void sblkdev_remove_device(void)
     sblkdev_free_buffer(dev);
 
     kfree(dev);
-    _sblkdev_device = NULL;
 
     printk(KERN_WARNING "sblkdev: simple block device was removed\n");
 }
+
 
 static int do_simple_request(struct request *rq, unsigned int *nr_bytes)
 {
     int ret = SUCCESS;
     struct bio_vec bvec;
     struct req_iterator iter;
+    int idx;
     sblkdev_device_t *dev = rq->q->queuedata;
     loff_t pos = blk_rq_pos(rq) << SECTOR_SHIFT;
     loff_t dev_size = (loff_t)(dev->capacity << SECTOR_SHIFT);
@@ -127,10 +158,30 @@ static int do_simple_request(struct request *rq, unsigned int *nr_bytes)
         if ((pos + b_len) > dev_size)
             b_len = (unsigned long)(dev_size - pos);
 
-        if (rq_data_dir(rq))//WRITE
-            memcpy(dev->data + pos, b_buf, b_len);
-        else//READ
-            memcpy(b_buf, dev->data + pos, b_len);
+        switch(dev->mode){
+        case MEM:
+            if (rq_data_dir(rq))//WRITE
+                memcpy(dev->data + pos, b_buf, b_len);
+            else//READ
+                memcpy(b_buf, dev->data + pos, b_len);
+            break;
+        case IO:
+            writel_relaxed(pos, dev->data + REG_LOW);
+            writel_relaxed(pos >> 32, dev->data + REG_HIGH);
+            writel_relaxed(b_len, dev->data + REG_SIZE);
+            writel_relaxed(1 | ((rq_data_dir(rq) != 0) << 1), dev->data + REG_STATUS);
+            while(readl_relaxed( dev->data + REG_STATUS) & 1);
+            if (rq_data_dir(rq)){//WRITE
+                for(idx = 0;idx < b_len;idx++){
+                    writel_relaxed(((char*)b_buf)[idx], dev->data + REG_DATA);
+                }
+            } else {//READ
+                for(idx = 0;idx < b_len;idx++){
+                    ((char*)b_buf)[idx] = readl_relaxed(dev->data + REG_DATA);
+                }
+            }
+            break;
+        }
 
         pos += b_len;
         *nr_bytes += b_len;
@@ -226,7 +277,7 @@ static int _ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd, uns
     int ret = -ENOTTY;
     sblkdev_device_t* dev = bdev->bd_disk->private_data;
 
-    printk(KERN_WARNING "sblkdev: ioctl %x received\n", cmd);
+    //printk(KERN_WARNING "sblkdev: ioctl %x received\n", cmd);
 
     switch (cmd) {
         case HDIO_GETGEO:
@@ -273,19 +324,28 @@ static const struct block_device_operations _fops = {
 };
 
 //
-static int sblkdev_add_device(void)
+static int sblkdev_add_device(struct platform_device * pdev)
 {
     int ret = SUCCESS;
 
-    sblkdev_device_t* dev = kzalloc(sizeof(sblkdev_device_t), GFP_KERNEL);
+
+    sblkdev_device_t* dev = devm_kzalloc(&pdev->dev, sizeof(sblkdev_device_t), GFP_KERNEL);
+    platform_set_drvdata(pdev, dev);
+
     if (dev == NULL) {
         printk(KERN_WARNING "sblkdev: unable to allocate %ld bytes\n", sizeof(sblkdev_device_t));
         return -ENOMEM;
     }
-    _sblkdev_device = dev;
+
 
     do{
-        ret = sblkdev_allocate_buffer(dev);
+
+        if(of_property_read_u32(pdev->dev.of_node, "mode", &dev->mode)){
+            printk(KERN_WARNING "sblkdev: Missing mode in DTS\n");
+            break;
+        }
+
+        ret = sblkdev_allocate_buffer(dev, pdev);
         if(ret)
             break;
 
@@ -361,14 +421,14 @@ static int sblkdev_add_device(void)
     }while(false);
 
     if (ret){
-        sblkdev_remove_device();
+        sblkdev_remove_device(pdev);
         printk(KERN_WARNING "sblkdev: Failed add block device\n");
     }
 
     return ret;
 }
 
-static int __init sblkdev_init(void)
+static int sblkdev_init(struct platform_device * pdev)
 {
     int ret = SUCCESS;
 
@@ -378,23 +438,44 @@ static int __init sblkdev_init(void)
         return -EBUSY;
     }
 
-    ret = sblkdev_add_device();
+    ret = sblkdev_add_device(pdev);
     if (ret)
         unregister_blkdev(_sblkdev_major, _sblkdev_name);
         
     return ret;
 }
 
-static void __exit sblkdev_exit(void)
+static int sblkdev_exit(struct platform_device * pdev)
 {
-    sblkdev_remove_device();
+    sblkdev_remove_device(pdev);
 
     if (_sblkdev_major > 0)
         unregister_blkdev(_sblkdev_major, _sblkdev_name);
+
+    return SUCCESS;
 }
 
-module_init(sblkdev_init);
-module_exit(sblkdev_exit);
+
+
+#define DRV_NAME    "simple_block"
+
+static const struct of_device_id simple_block_of_match[] = {
+    {.compatible = "simple_block"},
+    {}
+};
+
+MODULE_DEVICE_TABLE(of, simple_block_of_match);
+
+static struct platform_driver simple_block_driver = {
+    .probe = sblkdev_init,
+    .remove = sblkdev_exit,
+    .driver = {
+        .name = DRV_NAME,
+        .of_match_table = simple_block_of_match,
+    },
+};
+module_platform_driver(simple_block_driver);
+
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Code Imp");
