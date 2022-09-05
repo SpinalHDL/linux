@@ -1,0 +1,501 @@
+//From https://github.com/CodeImp/sblkdev refered by https://prog.world/linux-kernel-5-0-we-write-simple-block-device-under-blk-mq/
+
+#include <linux/module.h>
+#include <linux/moduleparam.h>
+#include <linux/stat.h>
+#include <linux/init.h>
+#include <linux/device.h>
+#include <linux/blk_types.h>
+#include <linux/blkdev.h>
+#include <linux/blk-mq.h>
+#include <linux/platform_device.h>
+#include <uapi/linux/hdreg.h> //for struct hd_geometry
+#include <uapi/linux/cdrom.h> //for CDROM_GET_CAPABILITY
+#include <linux/of.h>
+
+#ifndef SUCCESS
+#define SUCCESS 0
+#endif
+
+//This defines are available in blkdev.h from kernel 4.17 (vanilla).
+#ifndef SECTOR_SHIFT 
+#define SECTOR_SHIFT 9
+#endif
+#ifndef SECTOR_SIZE
+#define SECTOR_SIZE (1 << SECTOR_SHIFT)
+#endif
+
+#define REG_STATUS 0x0
+#define REG_LOW 0x4
+#define REG_HIGH 0x8
+#define REG_SIZE 0xC
+#define REG_DATA 0x10
+#define REG_CAPACITY_LOW 0x20
+#define REG_CAPACITY_HIGH 0x24
+
+
+// constants - instead defines
+static const char* _sblkdev_name = "sblkdev";
+//static const size_t _sblkdev_buffer_size = 1024*1024/2 * PAGE_SIZE;
+
+// types
+typedef struct sblkdev_cmd_s
+{
+    //nothing
+} sblkdev_cmd_t;
+
+enum sblkdev_mode{MEM = 0, IO = 1};
+
+// The internal representation of our device
+typedef struct sblkdev_device_s
+{
+    sector_t capacity;			    // Device size in bytes
+    u8* data;			    // The data aray. u8 - 8 bytes
+    atomic_t open_counter;			// How many openers
+
+    struct blk_mq_tag_set tag_set;
+    struct request_queue *queue;	// For mutual exclusion
+
+    struct gendisk *disk;		// The gendisk structure
+    enum sblkdev_mode mode;
+} sblkdev_device_t;
+
+// global variables 
+
+static int _sblkdev_major = 0;
+//static sblkdev_device_t* _sblkdev_device = NULL;
+
+
+// functions
+static int sblkdev_allocate_buffer(sblkdev_device_t* dev, struct platform_device * pdev)
+{
+    struct resource *res;
+//    dev->data = kmalloc(dev->capacity << SECTOR_SHIFT, GFP_KERNEL); //
+    //dev->data = memremap(0xC0000000, dev->capacity << SECTOR_SHIFT, MEMREMAP_WB);
+    res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+    dev->data = devm_ioremap_resource(&pdev->dev, res);
+
+    if (dev->data == NULL) {
+        printk(KERN_WARNING "sblkdev: vmalloc failure.\n");
+        return -ENOMEM;
+    }
+
+    printk(KERN_WARNING "sblkdev: [0x%llx - 0x%llx]\n", res->start, res->end);
+
+
+    switch(dev->mode){
+    case MEM:
+        dev->capacity = (res->end+1 - res->start) >> SECTOR_SHIFT;
+        break;
+    case IO:
+        dev->capacity = (readl(dev->data + REG_CAPACITY_LOW) + (((u64)readl(dev->data + REG_CAPACITY_HIGH)) << 32)) >> SECTOR_SHIFT;
+        break;
+    }
+
+    printk(KERN_WARNING "sblkdev: Capacity %lld MB\n", dev->capacity >> (20-SECTOR_SHIFT));
+
+    return SUCCESS;
+}
+
+static void sblkdev_free_buffer(sblkdev_device_t* dev)
+{
+    if (dev->data) {
+        kfree(dev->data);
+
+        dev->data = NULL;
+        dev->capacity = 0;
+    }
+}
+
+static void sblkdev_remove_device(struct platform_device * pdev)
+{
+    sblkdev_device_t* dev = platform_get_drvdata(pdev);
+    if (dev == NULL)
+        return;
+
+    if (dev->disk)
+        del_gendisk(dev->disk);
+
+    if (dev->queue) {
+        blk_cleanup_queue(dev->queue);
+        dev->queue = NULL;
+    }
+
+    if (dev->tag_set.tags)
+        blk_mq_free_tag_set(&dev->tag_set);
+
+    if (dev->disk) {
+        put_disk(dev->disk);
+        dev->disk = NULL;
+    }
+
+    sblkdev_free_buffer(dev);
+
+    kfree(dev);
+
+    printk(KERN_WARNING "sblkdev: simple block device was removed\n");
+}
+
+
+//void __iomem *regs_ref = 0;
+//void __iomem *regs_fail;
+
+
+static int do_simple_request(struct request *rq, unsigned int *nr_bytes)
+{
+    int ret = SUCCESS;
+    struct bio_vec bvec;
+    struct req_iterator iter;
+    int idx;
+    sblkdev_device_t *dev = rq->q->queuedata;
+    loff_t pos = blk_rq_pos(rq) << SECTOR_SHIFT;
+    loff_t dev_size = (loff_t)(dev->capacity << SECTOR_SHIFT);
+
+    //printk(KERN_WARNING "sblkdev: request start from sector %ld \n", blk_rq_pos(rq));
+    
+    //if(regs_ref == 0) regs_ref = ioremap(0x20000000, 0x60000000);
+    //if(regs_fail == 0) regs_fail  = ioremap(0x10000000, 4096);
+
+    rq_for_each_segment(bvec, rq, iter)
+    {
+        unsigned long b_len = bvec.bv_len;
+
+        void* b_buf = page_address(bvec.bv_page) + bvec.bv_offset;
+
+        if ((pos + b_len) > dev_size)
+            b_len = (unsigned long)(dev_size - pos);
+
+        switch(dev->mode){
+        case MEM:
+            if (rq_data_dir(rq))//WRITE
+                memcpy(dev->data + pos, b_buf, b_len);
+            else//READ
+                memcpy(b_buf, dev->data + pos, b_len);
+            break;
+        case IO:
+            writel_relaxed(pos, dev->data + REG_LOW);
+            writel_relaxed(pos >> 32, dev->data + REG_HIGH);
+            writel_relaxed(b_len, dev->data + REG_SIZE);
+            writel_relaxed(1 | ((rq_data_dir(rq) != 0) << 1), dev->data + REG_STATUS);
+            while(readl_relaxed( dev->data + REG_STATUS) & 1);
+            if (rq_data_dir(rq)){//WRITE
+                //memcpy(regs_ref + pos, b_buf, b_len);
+                for(idx = 0;idx < b_len;idx++){
+                    writel_relaxed(((char*)b_buf)[idx], dev->data + REG_DATA);
+                }
+            } else {//READ
+            
+                //memcpy(b_buf, regs_ref + pos, b_len);
+                for(idx = 0;idx < b_len;idx++){
+                    ((char*)b_buf)[idx] = readl_relaxed(dev->data + REG_DATA);
+
+                    //if(((char*)b_buf)[idx] != (char)readl_relaxed(dev->data + REG_DATA)){
+                       // printk("simple_block failure at %llx %ld\n",pos, b_len);
+                    //    writel_relaxed(0, regs_fail + 0x80);
+                    //}
+                }
+            }
+            break;
+        }
+
+        pos += b_len;
+        *nr_bytes += b_len;
+    }
+
+    return ret;
+}
+
+static blk_status_t _queue_rq(struct blk_mq_hw_ctx *hctx, const struct blk_mq_queue_data* bd)
+{
+    unsigned int nr_bytes = 0;
+    blk_status_t status = BLK_STS_OK;
+    struct request *rq = bd->rq;
+
+    //we cannot use any locks that make the thread sleep
+    blk_mq_start_request(rq);
+
+    if (do_simple_request(rq, &nr_bytes) != SUCCESS)
+        status = BLK_STS_IOERR;
+
+    //printk(KERN_WARNING "sblkdev: request process %d bytes\n", nr_bytes);
+
+#if 0 //simply and can be called from proprietary module 
+    blk_mq_end_request(rq, status);
+#else //can set real processed bytes count 
+    if (blk_update_request(rq, status, nr_bytes)) //GPL-only symbol
+        BUG();
+    __blk_mq_end_request(rq, status);
+#endif
+
+    return BLK_STS_OK;//always return ok
+}
+
+static struct blk_mq_ops _mq_ops = {
+    .queue_rq = _queue_rq,
+};
+
+static int _open(struct block_device *bdev, fmode_t mode)
+{
+    sblkdev_device_t* dev = bdev->bd_disk->private_data;
+    if (dev == NULL) {
+        printk(KERN_WARNING "sblkdev: invalid disk private_data\n");
+        return -ENXIO;
+    }
+
+    atomic_inc(&dev->open_counter);
+
+    //printk(KERN_WARNING "sblkdev: device was opened\n");
+
+    return SUCCESS;
+}
+static void _release(struct gendisk *disk, fmode_t mode)
+{
+    sblkdev_device_t* dev = disk->private_data;
+    if (dev) {
+        atomic_dec(&dev->open_counter);
+
+        //printk(KERN_WARNING "sblkdev: device was closed\n");
+    }
+    else
+        printk(KERN_WARNING "sblkdev: invalid disk private_data\n");
+}
+
+static int _getgeo(sblkdev_device_t* dev, struct hd_geometry* geo)
+{
+    sector_t quotient;
+
+    geo->start = 0;
+    if (dev->capacity > 63) {
+
+        geo->sectors = 63;
+        quotient = div_u64((dev->capacity + (63 - 1)) , 63);
+
+        if (quotient > 255) {
+            geo->heads = 255;
+            geo->cylinders = (unsigned short)div_u64((quotient + (255 - 1)) , 255);
+        }
+        else {
+            geo->heads = (unsigned char)quotient;
+            geo->cylinders = 1;
+        }
+    }
+    else {
+        geo->sectors = (unsigned char)dev->capacity;
+        geo->cylinders = 1;
+        geo->heads = 1;
+    }
+    return SUCCESS;
+}
+
+static int _ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd, unsigned long arg)
+{
+    int ret = -ENOTTY;
+    sblkdev_device_t* dev = bdev->bd_disk->private_data;
+
+    //printk(KERN_WARNING "sblkdev: ioctl %x received\n", cmd);
+
+    switch (cmd) {
+        case HDIO_GETGEO:
+        {
+            struct hd_geometry geo;
+
+            ret = _getgeo(dev, &geo );
+            if (copy_to_user((void *)arg, &geo, sizeof(struct hd_geometry)))
+                ret = -EFAULT;
+            else
+                ret = SUCCESS;
+            break;
+        }
+        case CDROM_GET_CAPABILITY: //0x5331  / * get capabilities * / 
+        {
+            struct gendisk *disk = bdev->bd_disk;
+
+            if (bdev->bd_disk && (disk->flags & GENHD_FL_CD))
+                ret = SUCCESS;
+            else
+                ret = -EINVAL;
+            break;
+        }
+    }
+
+    return ret;
+}
+#ifdef CONFIG_COMPAT
+static int _compat_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd, unsigned long arg)
+{
+    // CONFIG_COMPAT is to allow running 32-bit userspace code on a 64-bit kernel
+    return -ENOTTY; // not supported
+}
+#endif
+
+static const struct block_device_operations _fops = {
+    .owner = THIS_MODULE,
+    .open = _open,
+    .release = _release,
+    .ioctl = _ioctl,
+#ifdef CONFIG_COMPAT
+    .compat_ioctl = _compat_ioctl,
+#endif
+};
+
+//
+static int sblkdev_add_device(struct platform_device * pdev)
+{
+    int ret = SUCCESS;
+
+
+    sblkdev_device_t* dev = devm_kzalloc(&pdev->dev, sizeof(sblkdev_device_t), GFP_KERNEL);
+    platform_set_drvdata(pdev, dev);
+
+    if (dev == NULL) {
+        printk(KERN_WARNING "sblkdev: unable to allocate %ld bytes\n", sizeof(sblkdev_device_t));
+        return -ENOMEM;
+    }
+
+
+    do{
+
+        if(of_property_read_u32(pdev->dev.of_node, "mode", &dev->mode)){
+            printk(KERN_WARNING "sblkdev: Missing mode in DTS\n");
+            break;
+        }
+
+        ret = sblkdev_allocate_buffer(dev, pdev);
+        if(ret)
+            break;
+
+#if 0 //simply variant with helper function blk_mq_init_sq_queue. It`s available from kernel 4.20 (vanilla).
+        {//configure tag_set
+            struct request_queue *queue;
+
+            dev->tag_set.cmd_size = sizeof(sblkdev_cmd_t);
+            dev->tag_set.driver_data = dev;
+
+            queue = blk_mq_init_sq_queue(&dev->tag_set, &_mq_ops, 128, BLK_MQ_F_SHOULD_MERGE | BLK_MQ_F_SG_MERGE);
+            if (IS_ERR(queue)) {
+                ret = PTR_ERR(queue);
+                printk(KERN_WARNING "sblkdev: unable to allocate and initialize tag set\n");
+                break;
+            }
+            dev->queue = queue;
+        }
+#else   // more flexible variant
+        {//configure tag_set
+            dev->tag_set.ops = &_mq_ops;
+            dev->tag_set.nr_hw_queues = 1;
+            dev->tag_set.queue_depth = 128;
+            dev->tag_set.numa_node = NUMA_NO_NODE;
+            dev->tag_set.cmd_size = sizeof(sblkdev_cmd_t);
+            dev->tag_set.flags = BLK_MQ_F_SHOULD_MERGE ;
+            dev->tag_set.driver_data = dev;
+
+            ret = blk_mq_alloc_tag_set(&dev->tag_set);
+            if (ret) {
+                printk(KERN_WARNING "sblkdev: unable to allocate tag set\n");
+                break;
+            }
+        }
+
+        {//configure queue
+            struct request_queue *queue = blk_mq_init_queue(&dev->tag_set);
+            if (IS_ERR(queue)) {
+                ret = PTR_ERR(queue);
+                printk(KERN_WARNING "sblkdev: Failed to allocate queue\n");
+                break;
+            }
+            dev->queue = queue;
+        }
+#endif
+        dev->queue->queuedata = dev;
+
+        {// configure disk
+            struct gendisk *disk = blk_alloc_disk(NUMA_NO_NODE); //only one partition 
+            printk("B\n");
+            if (disk == NULL) {
+                printk(KERN_WARNING "sblkdev: Failed to allocate disk\n");
+                ret = -ENOMEM;
+                break;
+            }
+            printk("C\n");
+
+            disk->flags |= GENHD_FL_NO_PART_SCAN; //only one partition 
+            //disk->flags |= GENHD_FL_EXT_DEVT;
+            disk->flags |= GENHD_FL_REMOVABLE;
+
+            disk->major = _sblkdev_major;
+            disk->first_minor = 0;
+            disk->minors = 1;
+            disk->fops = &_fops;
+            disk->private_data = dev;
+            disk->queue = dev->queue;
+            sprintf(disk->disk_name, "sblkdev%d", 0);
+            set_capacity(disk, dev->capacity);
+
+            dev->disk = disk;
+            printk("D\n");
+            add_disk(disk);
+            printk("E\n");
+        }
+
+        printk(KERN_WARNING "sblkdev: simple block device was created\n");
+    }while(false);
+
+    if (ret){
+        sblkdev_remove_device(pdev);
+        printk(KERN_WARNING "sblkdev: Failed add block device\n");
+    }
+
+    return ret;
+}
+
+static int sblkdev_init(struct platform_device * pdev)
+{
+    int ret = SUCCESS;
+
+    _sblkdev_major = register_blkdev(_sblkdev_major, _sblkdev_name);
+    if (_sblkdev_major <= 0){
+        printk(KERN_WARNING "sblkdev: unable to get major number\n");
+        return -EBUSY;
+    }
+
+    ret = sblkdev_add_device(pdev);
+    if (ret)
+        unregister_blkdev(_sblkdev_major, _sblkdev_name);
+        
+    return ret;
+}
+
+static int sblkdev_exit(struct platform_device * pdev)
+{
+    sblkdev_remove_device(pdev);
+
+    if (_sblkdev_major > 0)
+        unregister_blkdev(_sblkdev_major, _sblkdev_name);
+
+    return SUCCESS;
+}
+
+
+
+#define DRV_NAME    "simple_block"
+
+static const struct of_device_id simple_block_of_match[] = {
+    {.compatible = "simple_block"},
+    {}
+};
+
+MODULE_DEVICE_TABLE(of, simple_block_of_match);
+
+static struct platform_driver simple_block_driver = {
+    .probe = sblkdev_init,
+    .remove = sblkdev_exit,
+    .driver = {
+        .name = DRV_NAME,
+        .of_match_table = simple_block_of_match,
+    },
+};
+module_platform_driver(simple_block_driver);
+
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Code Imp");
